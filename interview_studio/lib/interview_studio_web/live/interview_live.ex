@@ -255,6 +255,9 @@ defmodule InterviewStudioWeb.InterviewLive do
                   phx-debounce="100"
                   placeholder="Type your response..."
                   autocomplete="off"
+                  autofocus
+                  phx-hook="AutoFocus"
+                  id="message-input"
                   disabled={@loading}
                   class="flex-1 bg-slate-700 border-0 rounded-xl px-4 py-3 text-white placeholder-slate-400 focus:ring-2 focus:ring-blue-500 focus:outline-none disabled:opacity-50"
                 />

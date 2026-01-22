@@ -37,6 +37,17 @@ const Hooks = {
     scrollToBottom() {
       this.el.scrollTop = this.el.scrollHeight
     }
+  },
+  AutoFocus: {
+    mounted() {
+      this.el.focus()
+    },
+    updated() {
+      // Refocus after updates (like sending a message)
+      if (!this.el.disabled) {
+        this.el.focus()
+      }
+    }
   }
 }
 
