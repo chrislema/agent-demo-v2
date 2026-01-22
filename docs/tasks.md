@@ -413,7 +413,7 @@ Each task should be independently completable and verifiable.
 ## Phase 9: Polish & Deploy
 
 ### 9.1 Error Handling
-- [ ] **Task:** Add comprehensive error handling
+- [x] **Task:** Add comprehensive error handling
 - **Acceptance Criteria:**
   - LLM failures don't crash agents
   - Graceful fallbacks for missing responses
@@ -449,7 +449,7 @@ Each task should be independently completable and verifiable.
   ```
 
 ### 9.4 Deploy to Fly.io
-- [ ] **Task:** Deploy application
+- [x] **Task:** Deploy application
 - **Acceptance Criteria:**
   - App deployed to agentdemov2.fly.dev
   - Health checks passing
@@ -472,5 +472,5 @@ Each task should be independently completable and verifiable.
 | 6. Orchestration | 2 | 2/2 |
 | 7. Chat UI | 3 | 3/3 |
 | 8. Debug UI | 4 | 4/4 |
-| 9. Deploy | 4 | 2/4 |
-| **Total** | **34** | **32/34** |
+| 9. Deploy | 4 | 4/4 |
+| **Total** | **34** | **34/34** |
