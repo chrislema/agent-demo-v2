@@ -1,0 +1,332 @@
+defmodule InterviewStudio.Agents.Director do
+  @moduledoc """
+  The Director Agent - the orchestrator and user-facing voice.
+
+  Responsibilities:
+  - Formulate natural, warm questions
+  - Decide whether to follow script, probe deeper, or transition
+  - Synthesize swarm input into conversational decisions
+  - Maintain interview flow and pacing
+
+  The Director subscribes to:
+  - interview.utterance.user (user messages)
+  - interview.phase.* (phase changes)
+  - observer.insight.* (themes, patterns)
+  - observer.suggestion.* (probes)
+  - observer.status.* (engagement)
+  """
+
+  use GenServer
+  require Logger
+
+  alias InterviewStudio.InterviewBus
+  alias InterviewStudio.Pipeline.{InterviewFSM, Phases}
+
+  defstruct [
+    :session_id,
+    :current_phase,
+    :questions_asked,
+    :questions_remaining,
+    :active_themes,
+    :pending_probes,
+    :engagement_level,
+    :conversation_history,
+    :last_user_message,
+    :llm_config
+  ]
+
+  # Client API
+
+  def start_link(opts \\ []) do
+    session_id = Keyword.fetch!(opts, :session_id)
+    GenServer.start_link(__MODULE__, opts, name: via_tuple(session_id))
+  end
+
+  def get_state(session_id) do
+    GenServer.call(via_tuple(session_id), :get_state)
+  end
+
+  def process_user_message(session_id, message) do
+    GenServer.call(via_tuple(session_id), {:user_message, message}, 30_000)
+  end
+
+  def get_next_action(session_id) do
+    GenServer.call(via_tuple(session_id), :get_next_action, 30_000)
+  end
+
+  # Server Callbacks
+
+  @impl true
+  def init(opts) do
+    session_id = Keyword.fetch!(opts, :session_id)
+    llm_config = Keyword.get(opts, :llm_config, default_llm_config())
+
+    state = %__MODULE__{
+      session_id: session_id,
+      current_phase: :preparation,
+      questions_asked: [],
+      questions_remaining: Phases.questions(:core_questions),
+      active_themes: [],
+      pending_probes: [],
+      engagement_level: :high,
+      conversation_history: [],
+      last_user_message: nil,
+      llm_config: llm_config
+    }
+
+    # Subscribe to relevant signals
+    subscribe_to_signals()
+
+    Logger.info("[Director] Started for session #{session_id}")
+    {:ok, state}
+  end
+
+  @impl true
+  def handle_call(:get_state, _from, state) do
+    {:reply, state, state}
+  end
+
+  @impl true
+  def handle_call({:user_message, message}, _from, state) do
+    Logger.debug("[Director] Processing user message: #{String.slice(message, 0, 50)}...")
+
+    # Record the message
+    timestamp = DateTime.utc_now()
+
+    new_history = [
+      %{role: :user, content: message, timestamp: timestamp}
+      | state.conversation_history
+    ]
+
+    # Publish user utterance signal
+    publish_user_utterance(message, state.current_phase)
+
+    new_state = %{state |
+      conversation_history: new_history,
+      last_user_message: message
+    }
+
+    {:reply, :ok, new_state}
+  end
+
+  @impl true
+  def handle_call(:get_next_action, _from, state) do
+    action = decide_next_action(state)
+    {:reply, action, state}
+  end
+
+  @impl true
+  def handle_info({:signal, signal}, state) do
+    new_state = handle_signal(signal, state)
+    {:noreply, new_state}
+  end
+
+  # Signal handlers
+
+  defp handle_signal(%{type: "interview.phase.entered"} = signal, state) do
+    phase = signal.data.phase_name
+    Logger.debug("[Director] Phase entered: #{phase}")
+    %{state | current_phase: phase}
+  end
+
+  defp handle_signal(%{type: "observer.insight.theme"} = signal, state) do
+    theme = %{
+      theme: signal.data.theme,
+      evidence: signal.data.evidence,
+      confidence: signal.data.confidence
+    }
+    Logger.debug("[Director] Theme received: #{theme.theme}")
+    %{state | active_themes: [theme | state.active_themes] |> Enum.take(10)}
+  end
+
+  defp handle_signal(%{type: "observer.suggestion.probe"} = signal, state) do
+    probe = %{
+      topic: signal.data.topic,
+      question: signal.data.suggested_question,
+      rationale: signal.data.rationale,
+      priority: signal.data.priority
+    }
+    Logger.debug("[Director] Probe suggested: #{probe.topic}")
+
+    # Sort by priority
+    probes = [probe | state.pending_probes]
+    |> Enum.sort_by(fn p ->
+      case p.priority do
+        :high -> 0
+        :medium -> 1
+        :low -> 2
+      end
+    end)
+    |> Enum.take(5)
+
+    %{state | pending_probes: probes}
+  end
+
+  defp handle_signal(%{type: "observer.status.engagement"} = signal, state) do
+    level = signal.data.level
+    Logger.debug("[Director] Engagement status: #{level}")
+    %{state | engagement_level: level}
+  end
+
+  defp handle_signal(_signal, state), do: state
+
+  # Decision logic
+
+  defp decide_next_action(state) do
+    cond do
+      # Critical engagement - wrap up
+      state.engagement_level == :critical ->
+        %{
+          type: :transition,
+          to_phase: :closing,
+          reason: "Engagement dropped to critical level"
+        }
+
+      # In preparation - auto-advance to opening
+      state.current_phase == :preparation ->
+        %{
+          type: :transition,
+          to_phase: :opening,
+          reason: "Preparation complete"
+        }
+
+      # In opening - greet the user
+      state.current_phase == :opening ->
+        question = get_opening_question()
+        %{
+          type: :ask,
+          question: question,
+          source: :question_bank
+        }
+
+      # In core questions - either probe or ask next question
+      state.current_phase == :core_questions ->
+        decide_core_questions_action(state)
+
+      # In probing - ask probe questions
+      state.current_phase == :probing ->
+        decide_probing_action(state)
+
+      # In synthesis - summarize themes
+      state.current_phase == :synthesis ->
+        %{
+          type: :synthesize,
+          themes: state.active_themes
+        }
+
+      # In closing - thank and wrap up
+      state.current_phase == :closing ->
+        %{
+          type: :close,
+          themes: state.active_themes
+        }
+
+      true ->
+        %{type: :wait}
+    end
+  end
+
+  defp decide_core_questions_action(state) do
+    # Check if we have high-priority probes
+    high_probe = Enum.find(state.pending_probes, fn p -> p.priority == :high end)
+
+    cond do
+      # High-priority probe - insert it
+      high_probe != nil ->
+        %{
+          type: :probe,
+          question: high_probe.question,
+          topic: high_probe.topic
+        }
+
+      # More questions remaining
+      state.questions_remaining != [] ->
+        [next | _rest] = state.questions_remaining
+        %{
+          type: :ask,
+          question: next.text,
+          question_id: next.id,
+          source: :question_bank
+        }
+
+      # All questions done - transition to probing or synthesis
+      state.pending_probes != [] ->
+        %{
+          type: :transition,
+          to_phase: :probing,
+          reason: "Core questions complete, probes pending"
+        }
+
+      true ->
+        %{
+          type: :transition,
+          to_phase: :synthesis,
+          reason: "Core questions complete"
+        }
+    end
+  end
+
+  defp decide_probing_action(state) do
+    cond do
+      # More probes to ask
+      state.pending_probes != [] ->
+        [probe | _rest] = state.pending_probes
+        %{
+          type: :probe,
+          question: probe.question,
+          topic: probe.topic
+        }
+
+      # Done probing
+      true ->
+        %{
+          type: :transition,
+          to_phase: :synthesis,
+          reason: "Probing complete"
+        }
+    end
+  end
+
+  defp get_opening_question do
+    case Phases.questions(:opening) do
+      [first | _] -> first.text
+      [] -> "Hi! I'm excited to learn more about you and your story. Ready to dive in?"
+    end
+  end
+
+  # Signal publishing
+
+  defp publish_user_utterance(content, phase) do
+    signal = %Jido.Signal{
+      type: "interview.utterance.user",
+      source: "director",
+      id: Jido.Util.generate_id(),
+      data: %{
+        content: content,
+        timestamp: DateTime.utc_now(),
+        phase_context: phase
+      }
+    }
+    InterviewBus.publish(signal)
+  end
+
+  defp subscribe_to_signals do
+    InterviewBus.subscribe("interview.utterance.user")
+    InterviewBus.subscribe("interview.phase.**")
+    InterviewBus.subscribe("observer.insight.**")
+    InterviewBus.subscribe("observer.suggestion.**")
+    InterviewBus.subscribe("observer.status.**")
+  end
+
+  defp via_tuple(session_id) do
+    {:via, Registry, {InterviewStudio.SessionRegistry, {:director, session_id}}}
+  end
+
+  defp default_llm_config do
+    %{
+      provider: :anthropic,
+      model: "claude-sonnet-4-20250514",
+      temperature: 0.7
+    }
+  end
+end
