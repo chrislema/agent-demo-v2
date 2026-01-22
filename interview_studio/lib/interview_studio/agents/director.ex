@@ -92,25 +92,30 @@ defmodule InterviewStudio.Agents.Director do
 
   @impl true
   def handle_call({:user_message, message}, _from, state) do
-    Logger.debug("[Director] Processing user message: #{String.slice(message, 0, 50)}...")
+    # Skip empty messages (used to kick off the interview)
+    if message == "" or message == nil do
+      {:reply, :ok, state}
+    else
+      Logger.debug("[Director] Processing user message: #{String.slice(message, 0, 50)}...")
 
-    # Record the message
-    timestamp = DateTime.utc_now()
+      # Record the message
+      timestamp = DateTime.utc_now()
 
-    new_history = [
-      %{role: :user, content: message, timestamp: timestamp}
-      | state.conversation_history
-    ]
+      new_history = [
+        %{role: :user, content: message, timestamp: timestamp}
+        | state.conversation_history
+      ]
 
-    # Publish user utterance signal
-    publish_user_utterance(message, state.current_phase)
+      # Publish user utterance signal
+      publish_user_utterance(message, state.current_phase)
 
-    new_state = %{state |
-      conversation_history: new_history,
-      last_user_message: message
-    }
+      new_state = %{state |
+        conversation_history: new_history,
+        last_user_message: message
+      }
 
-    {:reply, :ok, new_state}
+      {:reply, :ok, new_state}
+    end
   end
 
   @impl true
@@ -204,8 +209,10 @@ defmodule InterviewStudio.Agents.Director do
 
       # In opening - greet the user, then move to core questions
       state.current_phase == :opening ->
-        # If user has responded, transition to core questions
-        user_messages = Enum.filter(state.conversation_history, fn m -> m.role == :user end)
+        # If user has responded with actual content, transition to core questions
+        user_messages = Enum.filter(state.conversation_history, fn m ->
+          m.role == :user and m.content != "" and m.content != nil
+        end)
         if length(user_messages) >= 1 do
           %{
             type: :transition,
