@@ -20,7 +20,7 @@ defmodule InterviewStudio.Agents.Director do
   require Logger
 
   alias InterviewStudio.InterviewBus
-  alias InterviewStudio.Pipeline.{InterviewFSM, Phases}
+  alias InterviewStudio.Pipeline.Phases
 
   defstruct [
     :session_id,
@@ -52,6 +52,10 @@ defmodule InterviewStudio.Agents.Director do
 
   def get_next_action(session_id) do
     GenServer.call(via_tuple(session_id), :get_next_action, 30_000)
+  end
+
+  def generate_response(session_id, action_type, context) do
+    GenServer.call(via_tuple(session_id), {:generate_response, action_type, context}, 60_000)
   end
 
   # Server Callbacks
@@ -113,6 +117,12 @@ defmodule InterviewStudio.Agents.Director do
   def handle_call(:get_next_action, _from, state) do
     action = decide_next_action(state)
     {:reply, action, state}
+  end
+
+  @impl true
+  def handle_call({:generate_response, action_type, context}, _from, state) do
+    response = do_generate_response(action_type, context, state)
+    {:reply, response, state}
   end
 
   @impl true
@@ -316,6 +326,154 @@ defmodule InterviewStudio.Agents.Director do
     InterviewBus.subscribe("observer.insight.**")
     InterviewBus.subscribe("observer.suggestion.**")
     InterviewBus.subscribe("observer.status.**")
+  end
+
+  # LLM Response Generation
+
+  defp do_generate_response(action_type, context, state) do
+    system_prompt = build_system_prompt(state)
+    user_prompt = build_user_prompt(action_type, context, state)
+
+    case call_llm(system_prompt, user_prompt, state.llm_config) do
+      {:ok, response} -> {:ok, response}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp build_system_prompt(state) do
+    themes_text = case state.active_themes do
+      [] -> "No themes identified yet."
+      themes ->
+        themes
+        |> Enum.map(fn t -> "- #{t.theme}" end)
+        |> Enum.join("\n")
+    end
+
+    """
+    You are a warm, skilled interviewer conducting a "Story of You" interview.
+    Your goal is to discover what makes this person unique and amazing, to create a compelling article about them.
+
+    Interview Style:
+    - Be genuinely curious and engaged
+    - Ask follow-up questions naturally
+    - Acknowledge and validate what they share
+    - Keep responses concise (2-3 sentences max)
+    - Be conversational, not formal
+
+    Current phase: #{state.current_phase}
+    Questions asked: #{length(state.questions_asked)}
+    Themes discovered:
+    #{themes_text}
+
+    Always respond in first person as the interviewer. Never break character.
+    """
+  end
+
+  defp build_user_prompt(:ask, %{question: question}, state) do
+    history = format_recent_history(state.conversation_history, 3)
+
+    """
+    Recent conversation:
+    #{history}
+
+    Ask this question naturally, adapting it to flow from the conversation:
+    "#{question}"
+
+    Respond with just the question, naturally phrased.
+    """
+  end
+
+  defp build_user_prompt(:probe, %{question: question, topic: topic}, state) do
+    history = format_recent_history(state.conversation_history, 3)
+
+    """
+    Recent conversation:
+    #{history}
+
+    The user said something interesting about: #{topic}
+    Ask this follow-up question naturally:
+    "#{question}"
+
+    Respond with just the question, naturally phrased.
+    """
+  end
+
+  defp build_user_prompt(:synthesize, %{themes: themes}, state) do
+    history = format_recent_history(state.conversation_history, 5)
+    theme_list = themes |> Enum.map(fn t -> t.theme end) |> Enum.join(", ")
+
+    """
+    Recent conversation:
+    #{history}
+
+    Key themes discovered: #{theme_list}
+
+    Summarize what you've learned about this person in 2-3 sentences.
+    Ask if this captures their story well, or if they'd add anything.
+    """
+  end
+
+  defp build_user_prompt(:close, _context, state) do
+    history = format_recent_history(state.conversation_history, 3)
+
+    """
+    Recent conversation:
+    #{history}
+
+    Thank them warmly for sharing their story.
+    Let them know you have everything you need.
+    Ask if there's anything else they'd like to add.
+    Keep it brief and genuine.
+    """
+  end
+
+  defp build_user_prompt(_action_type, _context, _state) do
+    "Respond naturally to continue the conversation."
+  end
+
+  defp format_recent_history(history, count) do
+    history
+    |> Enum.take(count)
+    |> Enum.reverse()
+    |> Enum.map(fn msg ->
+      role = if msg.role == :user, do: "User", else: "Interviewer"
+      "#{role}: #{msg.content}"
+    end)
+    |> Enum.join("\n")
+  end
+
+  defp call_llm(system_prompt, user_prompt, config) do
+    try do
+      # Build Model struct with API key from environment
+      api_key = System.get_env("ANTHROPIC_API_KEY") || ""
+
+      model = %Jido.AI.Model{
+        provider: config[:provider] || :anthropic,
+        model: config[:model] || "claude-sonnet-4-20250514",
+        api_key: api_key,
+        temperature: config[:temperature] || 0.7,
+        max_tokens: config[:max_tokens] || 1000
+      }
+
+      # Build Prompt with system and user messages
+      prompt = Jido.AI.Prompt.new(%{
+        messages: [
+          %{role: :system, content: system_prompt},
+          %{role: :user, content: user_prompt}
+        ]
+      })
+
+      # Call Langchain action
+      case Jido.AI.Actions.Langchain.run(%{model: model, prompt: prompt}, %{}) do
+        {:ok, %{content: content}} -> {:ok, content}
+        {:ok, result} when is_map(result) -> {:ok, Map.get(result, :content, inspect(result))}
+        {:error, reason} -> {:error, reason}
+      end
+    rescue
+      e ->
+        Logger.error("[Director] LLM call failed: #{inspect(e)}")
+        {:error, "LLM call failed"}
+    end
   end
 
   defp via_tuple(session_id) do

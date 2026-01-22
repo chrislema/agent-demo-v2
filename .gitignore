@@ -1,2 +1,16 @@
 .DS_Store
 .claude/
+
+# Ralph runtime files (keep PROMPT.md, @fix_plan.md, @AGENT.md)
+.ralph/logs/
+.ralph/status.json
+.ralph/progress.json
+.ralph/.*
+
+# Misc
+*.swp
+*~
+interview_studio/mix\ 2.lock
+
+# External tools
+ralph-claude-code/

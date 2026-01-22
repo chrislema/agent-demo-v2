@@ -171,7 +171,7 @@ Each task should be independently completable and verifiable.
 ## Phase 4: Director Agent
 
 ### 4.1 Director Core
-- [~] **Task:** Create Director agent orchestrator
+- [x] **Task:** Create Director agent orchestrator
 - **Acceptance Criteria:**
   - `InterviewStudio.Agents.Director` GenServer created
   - Maintains state: current_phase, questions_asked/remaining, active_themes, pending_probes, engagement_level, conversation_history
@@ -185,7 +185,7 @@ Each task should be independently completable and verifiable.
   ```
 
 ### 4.2 Director Decision Logic
-- [ ] **Task:** Implement decision-making for next action
+- [x] **Task:** Implement decision-making for next action
 - **Acceptance Criteria:**
   - `get_next_action/1` returns appropriate action based on state
   - In opening: returns opening question
