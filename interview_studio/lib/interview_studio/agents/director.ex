@@ -116,7 +116,9 @@ defmodule InterviewStudio.Agents.Director do
   @impl true
   def handle_call(:get_next_action, _from, state) do
     action = decide_next_action(state)
-    {:reply, action, state}
+    # Update state based on action taken
+    new_state = apply_action_to_state(action, state)
+    {:reply, action, new_state}
   end
 
   @impl true
@@ -200,14 +202,24 @@ defmodule InterviewStudio.Agents.Director do
           reason: "Preparation complete"
         }
 
-      # In opening - greet the user
+      # In opening - greet the user, then move to core questions
       state.current_phase == :opening ->
-        question = get_opening_question()
-        %{
-          type: :ask,
-          question: question,
-          source: :question_bank
-        }
+        # If user has responded, transition to core questions
+        user_messages = Enum.filter(state.conversation_history, fn m -> m.role == :user end)
+        if length(user_messages) >= 1 do
+          %{
+            type: :transition,
+            to_phase: :core_questions,
+            reason: "Opening complete, user engaged"
+          }
+        else
+          question = get_opening_question()
+          %{
+            type: :ask,
+            question: question,
+            source: :question_bank
+          }
+        end
 
       # In core questions - either probe or ask next question
       state.current_phase == :core_questions ->
@@ -302,6 +314,31 @@ defmodule InterviewStudio.Agents.Director do
       [first | _] -> first.text
       [] -> "Hi! I'm excited to learn more about you and your story. Ready to dive in?"
     end
+  end
+
+  # State updates based on actions
+
+  defp apply_action_to_state(%{type: :ask, question_id: question_id} = action, state) when not is_nil(question_id) do
+    # Mark question as asked and remove from remaining
+    asked = [action | state.questions_asked]
+    remaining = Enum.reject(state.questions_remaining, fn q -> q.id == question_id end)
+    %{state | questions_asked: asked, questions_remaining: remaining}
+  end
+
+  defp apply_action_to_state(%{type: :ask}, state) do
+    # Opening question or question without ID - just track it was asked
+    state
+  end
+
+  defp apply_action_to_state(%{type: :probe, topic: topic}, state) do
+    # Remove the used probe from pending
+    remaining_probes = Enum.reject(state.pending_probes, fn p -> p.topic == topic end)
+    %{state | pending_probes: remaining_probes}
+  end
+
+  defp apply_action_to_state(_action, state) do
+    # For transitions, waits, etc. - no state change needed
+    state
   end
 
   # Signal publishing
