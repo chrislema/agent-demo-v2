@@ -167,6 +167,9 @@ defmodule InterviewStudio.Session do
   defp handle_action(session_id, %{type: :transition, to_phase: phase, reason: reason}) do
     case InterviewFSM.transition(session_id, phase, reason) do
       {:ok, ^phase} ->
+        # Sync Director's phase immediately (don't wait for async signal)
+        Director.set_phase(session_id, phase)
+
         # After transitioning, get the next action (question/probe/etc)
         # This ensures we ask the first question after entering a new phase
         if phase in [:opening, :core_questions, :probing, :synthesis, :closing] do
@@ -185,10 +188,12 @@ defmodule InterviewStudio.Session do
 
     case Director.generate_response(session_id, :ask, context) do
       {:ok, response} ->
+        Director.record_host_message(session_id, response)
         publish_host_utterance(response, action, session_id)
         {:ok, response}
       {:error, _reason} ->
         # Fallback to the raw question
+        Director.record_host_message(session_id, question)
         publish_host_utterance(question, action, session_id)
         {:ok, question}
     end
@@ -199,9 +204,11 @@ defmodule InterviewStudio.Session do
 
     case Director.generate_response(session_id, :probe, context) do
       {:ok, response} ->
+        Director.record_host_message(session_id, response)
         publish_host_utterance(response, %{type: :probe, topic: topic}, session_id)
         {:ok, response}
       {:error, _reason} ->
+        Director.record_host_message(session_id, question)
         publish_host_utterance(question, %{type: :probe, topic: topic}, session_id)
         {:ok, question}
     end
@@ -212,10 +219,12 @@ defmodule InterviewStudio.Session do
 
     case Director.generate_response(session_id, :synthesize, context) do
       {:ok, response} ->
+        Director.record_host_message(session_id, response)
         publish_host_utterance(response, %{type: :synthesize}, session_id)
         {:ok, response}
       {:error, _reason} ->
         fallback = "I've really enjoyed learning about you. Let me share what I've heard..."
+        Director.record_host_message(session_id, fallback)
         publish_host_utterance(fallback, %{type: :synthesize}, session_id)
         {:ok, fallback}
     end
@@ -224,10 +233,12 @@ defmodule InterviewStudio.Session do
   defp handle_action(session_id, %{type: :close}) do
     case Director.generate_response(session_id, :close, %{}) do
       {:ok, response} ->
+        Director.record_host_message(session_id, response)
         publish_host_utterance(response, %{type: :close}, session_id)
         {:ok, response}
       {:error, _reason} ->
         fallback = "Thank you so much for sharing your story with me. This has been wonderful!"
+        Director.record_host_message(session_id, fallback)
         publish_host_utterance(fallback, %{type: :close}, session_id)
         {:ok, fallback}
     end

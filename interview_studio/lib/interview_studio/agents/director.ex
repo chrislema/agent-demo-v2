@@ -58,6 +58,14 @@ defmodule InterviewStudio.Agents.Director do
     GenServer.call(via_tuple(session_id), {:generate_response, action_type, context}, 60_000)
   end
 
+  def set_phase(session_id, phase) do
+    GenServer.call(via_tuple(session_id), {:set_phase, phase})
+  end
+
+  def record_host_message(session_id, message) do
+    GenServer.call(via_tuple(session_id), {:host_message, message})
+  end
+
   # Server Callbacks
 
   @impl true
@@ -130,6 +138,25 @@ defmodule InterviewStudio.Agents.Director do
   def handle_call({:generate_response, action_type, context}, _from, state) do
     response = do_generate_response(action_type, context, state)
     {:reply, response, state}
+  end
+
+  @impl true
+  def handle_call({:set_phase, phase}, _from, state) do
+    Logger.debug("[Director] Phase set directly to: #{phase}")
+    {:reply, :ok, %{state | current_phase: phase}}
+  end
+
+  @impl true
+  def handle_call({:host_message, message}, _from, state) do
+    # Record interviewer's message in conversation history
+    timestamp = DateTime.utc_now()
+
+    new_history = [
+      %{role: :host, content: message, timestamp: timestamp}
+      | state.conversation_history
+    ]
+
+    {:reply, :ok, %{state | conversation_history: new_history}}
   end
 
   @impl true
