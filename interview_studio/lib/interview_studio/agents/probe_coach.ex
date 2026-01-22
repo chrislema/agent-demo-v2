@@ -39,6 +39,15 @@ defmodule InterviewStudio.Agents.ProbeCoach do
     GenServer.call(via_tuple(session_id), :get_pending_probes)
   end
 
+  @doc """
+  Request immediate synchronous analysis.
+  Used by Session.gather_insights/2 for parallel analysis with synchronization barrier.
+  Returns {:ok, probes} or {:error, reason}
+  """
+  def analyze_now(session_id) do
+    GenServer.call(via_tuple(session_id), :analyze_now, 10_000)
+  end
+
   # Server Callbacks
 
   @impl true
@@ -68,6 +77,48 @@ defmodule InterviewStudio.Agents.ProbeCoach do
   @impl true
   def handle_call(:get_pending_probes, _from, state) do
     {:reply, state.pending_probes, state}
+  end
+
+  @impl true
+  def handle_call(:analyze_now, _from, state) do
+    # Synchronous analysis for parallel gathering
+    # Used by Session.gather_insights/2 synchronization barrier
+    Logger.debug("[ProbeCoach] Synchronous analysis requested")
+
+    if state.last_user_message == nil or not worth_analyzing?(state.last_user_message) do
+      # No message or not worth analyzing - return existing probes
+      {:reply, {:ok, state.pending_probes}, state}
+    else
+      case generate_probes(state.last_user_message, state) do
+        {:ok, new_probes} when new_probes != [] ->
+          # Update state with new probes
+          updated_probes = (new_probes ++ state.pending_probes)
+            |> Enum.sort_by(fn p ->
+              case p.priority do
+                :high -> 0
+                :medium -> 1
+                :low -> 2
+              end
+            end)
+            |> Enum.take(5)
+
+          new_state = %{state | pending_probes: updated_probes}
+
+          # Also emit signals for UI visibility
+          emit_probes(new_probes, state)
+
+          {:reply, {:ok, updated_probes}, new_state}
+
+        {:ok, []} ->
+          # No new probes found
+          {:reply, {:ok, state.pending_probes}, state}
+
+        {:error, reason} ->
+          Logger.warning("[ProbeCoach] Sync analysis failed: #{inspect(reason)}")
+          # Return existing probes on failure
+          {:reply, {:ok, state.pending_probes}, state}
+      end
+    end
   end
 
   @impl true

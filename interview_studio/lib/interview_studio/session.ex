@@ -71,16 +71,128 @@ defmodule InterviewStudio.Session do
   @doc """
   Process a user message through the session.
   Returns {:ok, response} or {:error, reason}
+
+  This implements the multi-agent collaboration pattern:
+  1. Record message with Director
+  2. Trigger parallel analysis from all observer agents
+  3. Wait for insights (with timeout)
+  4. Director synthesizes insights into next action
+  5. Execute action
   """
   def process_message(session_id, message) do
     # Record the message with Director
     :ok = Director.process_user_message(session_id, message)
 
-    # Get Director's next action
-    action = Director.get_next_action(session_id)
+    # MULTI-AGENT: Gather insights from all observers in parallel
+    # This is the synchronization barrier - we wait for all agents before deciding
+    insights = gather_insights(session_id, timeout: 3000)
+
+    # Get Director's next action, informed by agent insights
+    action = Director.get_next_action(session_id, insights)
 
     # Handle the action
     handle_action(session_id, action)
+  end
+
+  @doc """
+  Gather insights from all observer agents with timeout.
+
+  Triggers parallel analysis and waits for results. Returns a consolidated
+  map of insights from all agents:
+
+    %{
+      themes: [%{theme: "...", evidence: "...", confidence: 0.8}, ...],
+      probes: [%{topic: "...", rationale: "...", priority: :high}, ...],
+      engagement: %{level: :high, trend: :stable, recommendation: "..."}
+    }
+
+  If an agent times out, partial results from other agents are still included.
+  """
+  def gather_insights(session_id, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, 3000)
+
+    # Start parallel tasks for each observer agent
+    tasks = [
+      Task.async(fn -> {:themes, get_story_analyst_insights(session_id)} end),
+      Task.async(fn -> {:probes, get_probe_coach_insights(session_id)} end),
+      Task.async(fn -> {:engagement, get_engagement_insights(session_id)} end)
+    ]
+
+    # Wait for all tasks with timeout
+    results = Task.yield_many(tasks, timeout)
+
+    # Collect results, using defaults for timed-out tasks
+    insights = Enum.reduce(results, %{themes: [], probes: [], engagement: default_engagement()}, fn
+      {task, {:ok, {key, value}}}, acc ->
+        Map.put(acc, key, value)
+
+      {task, {:exit, reason}}, acc ->
+        Logger.warning("[Session] Agent task failed: #{inspect(reason)}")
+        acc
+
+      {task, nil}, acc ->
+        # Task timed out - kill it and use default
+        Task.shutdown(task, :brutal_kill)
+        Logger.warning("[Session] Agent task timed out")
+        acc
+    end)
+
+    Logger.debug("[Session] Gathered insights: #{inspect(insights, pretty: true, limit: 3)}")
+    insights
+  end
+
+  defp get_story_analyst_insights(session_id) do
+    try do
+      # Request fresh analysis and get current themes
+      case StoryAnalyst.analyze_now(session_id) do
+        {:ok, themes} -> themes
+        {:error, _} -> StoryAnalyst.get_themes(session_id)
+      end
+    rescue
+      _ -> []
+    end
+  end
+
+  defp get_probe_coach_insights(session_id) do
+    try do
+      # Request fresh analysis and get current probes
+      case ProbeCoach.analyze_now(session_id) do
+        {:ok, probes} -> probes
+        {:error, _} -> ProbeCoach.get_pending_probes(session_id)
+      end
+    rescue
+      _ -> []
+    end
+  end
+
+  defp get_engagement_insights(session_id) do
+    try do
+      # Engagement Monitor is already synchronous (no LLM)
+      state = EngagementMonitor.get_state(session_id)
+      %{
+        level: state.level,
+        trend: state.trend,
+        indicators: state.indicators,
+        recommendation: engagement_recommendation(state.level, state.trend)
+      }
+    rescue
+      _ -> default_engagement()
+    end
+  end
+
+  defp default_engagement do
+    %{level: :medium, trend: :stable, indicators: %{}, recommendation: "Monitor and adjust"}
+  end
+
+  defp engagement_recommendation(level, trend) do
+    case {level, trend} do
+      {:critical, _} -> "Wrap up or change topic - user wants to finish"
+      {:low, :declining} -> "Try a different approach or easier question"
+      {:low, _} -> "Keep questions light and build rapport"
+      {:medium, :declining} -> "Engagement dropping, consider more engaging topic"
+      {:high, _} -> "Good engagement, lean in and go deeper"
+      _ -> "Monitor and adjust as needed"
+    end
   end
 
   @doc """

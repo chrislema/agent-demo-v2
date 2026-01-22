@@ -52,8 +52,8 @@ defmodule InterviewStudio.Agents.Director do
     GenServer.call(via_tuple(session_id), {:user_message, message}, 30_000)
   end
 
-  def get_next_action(session_id) do
-    GenServer.call(via_tuple(session_id), :get_next_action, 30_000)
+  def get_next_action(session_id, insights \\ %{}) do
+    GenServer.call(via_tuple(session_id), {:get_next_action, insights}, 30_000)
   end
 
   def generate_response(session_id, action_type, context) do
@@ -138,15 +138,80 @@ defmodule InterviewStudio.Agents.Director do
   end
 
   @impl true
-  def handle_call(:get_next_action, _from, state) do
-    # Check engagement monitor directly (sync) - don't rely only on async signals
-    current_engagement = get_current_engagement(state.session_id)
-    state_with_engagement = %{state | engagement_level: current_engagement}
+  def handle_call({:get_next_action, insights}, _from, state) do
+    # MULTI-AGENT: Merge gathered insights into state for decision-making
+    # This is where parallel agent analysis influences the Director's decisions
+    state_with_insights = merge_insights_into_state(state, insights)
 
-    action = decide_next_action(state_with_engagement)
+    action = decide_next_action(state_with_insights)
     # Update state based on action taken
-    new_state = apply_action_to_state(action, state_with_engagement)
+    new_state = apply_action_to_state(action, state_with_insights)
+
+    # Log the synthesis for debugging
+    Logger.debug("[Director] Synthesized action from insights: #{inspect(action.type)}")
+
     {:reply, action, new_state}
+  end
+
+  # Merge parallel agent insights into Director's state for decision-making
+  defp merge_insights_into_state(state, insights) when map_size(insights) == 0 do
+    # No insights provided - fall back to sync engagement check
+    current_engagement = get_current_engagement(state.session_id)
+    %{state | engagement_level: current_engagement}
+  end
+
+  defp merge_insights_into_state(state, insights) do
+    # Extract themes from Story Analyst
+    new_themes = Map.get(insights, :themes, [])
+    merged_themes = merge_themes(state.active_themes, new_themes)
+
+    # Extract probes from Probe Coach
+    new_probes = Map.get(insights, :probes, [])
+    merged_probes = merge_probes(state.pending_probes, new_probes)
+
+    # Extract engagement from Engagement Monitor
+    engagement_data = Map.get(insights, :engagement, %{})
+    engagement_level = Map.get(engagement_data, :level, state.engagement_level)
+
+    Logger.debug("[Director] Merged insights - themes: #{length(merged_themes)}, probes: #{length(merged_probes)}, engagement: #{engagement_level}")
+
+    %{state |
+      active_themes: merged_themes,
+      pending_probes: merged_probes,
+      engagement_level: engagement_level
+    }
+  end
+
+  defp merge_themes(existing, new) do
+    # Combine and deduplicate themes
+    (new ++ existing)
+    |> Enum.uniq_by(fn t -> t[:theme] || t.theme end)
+    |> Enum.take(10)
+  end
+
+  defp merge_probes(existing, new) do
+    # Convert new probes to expected format and merge
+    formatted_new = Enum.map(new, fn p ->
+      %{
+        topic: p[:topic] || p.topic,
+        question: p[:suggested_question] || p[:question] || p.suggested_question,
+        rationale: p[:rationale] || p.rationale,
+        priority: p[:priority] || p.priority || :medium
+      }
+    end)
+
+    # Combine, sort by priority, and limit
+    (formatted_new ++ existing)
+    |> Enum.uniq_by(fn p -> p.topic end)
+    |> Enum.sort_by(fn p ->
+      case p.priority do
+        :high -> 0
+        :medium -> 1
+        :low -> 2
+        _ -> 1
+      end
+    end)
+    |> Enum.take(5)
   end
 
   @impl true

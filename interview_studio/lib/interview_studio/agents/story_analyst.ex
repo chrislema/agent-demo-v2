@@ -42,6 +42,15 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
     GenServer.call(via_tuple(session_id), :get_themes)
   end
 
+  @doc """
+  Request immediate synchronous analysis.
+  Used by Session.gather_insights/2 for parallel analysis with synchronization barrier.
+  Returns {:ok, themes} or {:error, reason}
+  """
+  def analyze_now(session_id) do
+    GenServer.call(via_tuple(session_id), :analyze_now, 10_000)
+  end
+
   # Server Callbacks
 
   @impl true
@@ -72,6 +81,41 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
   @impl true
   def handle_call(:get_themes, _from, state) do
     {:reply, state.themes, state}
+  end
+
+  @impl true
+  def handle_call(:analyze_now, _from, state) do
+    # Synchronous analysis for parallel gathering
+    # Used by Session.gather_insights/2 synchronization barrier
+    Logger.debug("[StoryAnalyst] Synchronous analysis requested")
+
+    if Enum.empty?(state.conversation_buffer) do
+      # No conversation yet - return existing themes
+      {:reply, {:ok, state.themes}, state}
+    else
+      case analyze_themes(state) do
+        {:ok, new_themes, new_patterns} ->
+          # Update state with new insights
+          updated_themes = (new_themes ++ state.themes)
+            |> Enum.uniq_by(fn t -> t.theme end)
+            |> Enum.take(10)
+          updated_patterns = (new_patterns ++ state.patterns)
+            |> Enum.uniq_by(fn p -> p.pattern end)
+            |> Enum.take(5)
+
+          new_state = %{state | themes: updated_themes, patterns: updated_patterns}
+
+          # Also emit signals for UI visibility
+          emit_insights(new_themes, new_patterns, state)
+
+          {:reply, {:ok, updated_themes}, new_state}
+
+        {:error, reason} ->
+          Logger.warning("[StoryAnalyst] Sync analysis failed: #{inspect(reason)}")
+          # Return existing themes on failure
+          {:reply, {:ok, state.themes}, state}
+      end
+    end
   end
 
   @impl true
