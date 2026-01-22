@@ -17,7 +17,7 @@ defmodule InterviewStudioWeb.Router do
   scope "/", InterviewStudioWeb do
     pipe_through :browser
 
-    get "/", PageController, :home
+    live "/", InterviewLive
     live "/interview", InterviewLive
     live "/debug", DebugLive
   end
