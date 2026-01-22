@@ -32,7 +32,9 @@ defmodule InterviewStudio.Agents.Director do
     :engagement_level,
     :conversation_history,
     :last_user_message,
-    :llm_config
+    :llm_config,
+    :synthesis_delivered,
+    :user_responded_to_synthesis
   ]
 
   # Client API
@@ -83,7 +85,9 @@ defmodule InterviewStudio.Agents.Director do
       engagement_level: :high,
       conversation_history: [],
       last_user_message: nil,
-      llm_config: llm_config
+      llm_config: llm_config,
+      synthesis_delivered: false,
+      user_responded_to_synthesis: false
     }
 
     # Subscribe to relevant signals
@@ -121,6 +125,13 @@ defmodule InterviewStudio.Agents.Director do
         conversation_history: new_history,
         last_user_message: message
       }
+
+      # Track if user responded after synthesis was delivered
+      new_state = if state.current_phase == :synthesis and state.synthesis_delivered do
+        %{new_state | user_responded_to_synthesis: true}
+      else
+        new_state
+      end
 
       {:reply, :ok, new_state}
     end
@@ -263,12 +274,28 @@ defmodule InterviewStudio.Agents.Director do
       state.current_phase == :probing ->
         decide_probing_action(state)
 
-      # In synthesis - summarize themes
+      # In synthesis - summarize themes, then transition to closing
       state.current_phase == :synthesis ->
-        %{
-          type: :synthesize,
-          themes: state.active_themes
-        }
+        cond do
+          # User has responded to synthesis - move to closing
+          state.synthesis_delivered and state.user_responded_to_synthesis ->
+            %{
+              type: :transition,
+              to_phase: :closing,
+              reason: "Synthesis complete, user confirmed"
+            }
+
+          # Synthesis already delivered - wait for user response
+          state.synthesis_delivered ->
+            %{type: :wait}
+
+          # First time - deliver synthesis
+          true ->
+            %{
+              type: :synthesize,
+              themes: state.active_themes
+            }
+        end
 
       # In closing - thank and wrap up
       state.current_phase == :closing ->
@@ -368,6 +395,11 @@ defmodule InterviewStudio.Agents.Director do
     # Remove the used probe from pending
     remaining_probes = Enum.reject(state.pending_probes, fn p -> p.topic == topic end)
     %{state | pending_probes: remaining_probes}
+  end
+
+  defp apply_action_to_state(%{type: :synthesize}, state) do
+    # Mark that synthesis has been delivered
+    %{state | synthesis_delivered: true}
   end
 
   defp apply_action_to_state(_action, state) do

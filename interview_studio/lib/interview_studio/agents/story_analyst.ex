@@ -25,7 +25,7 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
     :llm_config
   ]
 
-  @analysis_threshold 3  # Analyze every N user messages
+  @analysis_threshold 2  # Analyze every N user messages
 
   # Client API
 
@@ -93,8 +93,13 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
 
     new_state = %{state | conversation_buffer: buffer, analysis_count: new_count}
 
-    # Trigger analysis periodically
-    if role == :user and rem(new_count, @analysis_threshold) == 0 do
+    # Trigger analysis periodically, or on first substantive user message
+    should_analyze = role == :user and (
+      rem(new_count, @analysis_threshold) == 0 or
+      (new_count == 1 and String.length(content) > 50)
+    )
+
+    if should_analyze do
       analyze_async(new_state)
     end
 
@@ -106,6 +111,9 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
   # Analysis
 
   defp analyze_async(state) do
+    # Emit signal that we're starting analysis (so debug panel shows activity)
+    emit_analyzing_signal(state)
+
     # Run analysis in background to not block
     Task.start(fn ->
       case analyze_themes(state) do
@@ -113,8 +121,38 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
           emit_insights(new_themes, new_patterns, state)
         {:error, reason} ->
           Logger.warning("[StoryAnalyst] Analysis failed: #{inspect(reason)}")
+          emit_error_signal(reason, state)
       end
     end)
+  end
+
+  defp emit_analyzing_signal(_state) do
+    signal = %Jido.Signal{
+      type: "observer.status.analyzing",
+      source: "story_analyst",
+      id: Jido.Util.generate_id(),
+      data: %{
+        status: :analyzing,
+        message: "Analyzing conversation for themes and patterns",
+        timestamp: DateTime.utc_now()
+      }
+    }
+    InterviewBus.publish(signal)
+    Logger.debug("[StoryAnalyst] Starting theme analysis")
+  end
+
+  defp emit_error_signal(reason, _state) do
+    signal = %Jido.Signal{
+      type: "observer.status.error",
+      source: "story_analyst",
+      id: Jido.Util.generate_id(),
+      data: %{
+        status: :error,
+        reason: inspect(reason),
+        timestamp: DateTime.utc_now()
+      }
+    }
+    InterviewBus.publish(signal)
   end
 
   defp analyze_themes(state) do
@@ -233,6 +271,21 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
       InterviewBus.publish(signal)
       Logger.debug("[StoryAnalyst] Identified pattern: #{pattern.pattern}")
     end)
+
+    # Always emit a completion signal so debug panel shows activity
+    completion_signal = %Jido.Signal{
+      type: "observer.status.complete",
+      source: "story_analyst",
+      id: Jido.Util.generate_id(),
+      data: %{
+        status: :complete,
+        themes_found: length(themes),
+        patterns_found: length(patterns),
+        message: if(themes == [] and patterns == [], do: "No new insights found", else: "Analysis complete"),
+        timestamp: DateTime.utc_now()
+      }
+    }
+    InterviewBus.publish(completion_signal)
 
     # Update state via message (since we're in a Task)
     GenServer.cast(via_tuple(state.session_id), {:update_insights, themes, patterns})

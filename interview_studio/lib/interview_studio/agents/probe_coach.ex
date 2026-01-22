@@ -98,12 +98,12 @@ defmodule InterviewStudio.Agents.ProbeCoach do
   defp worth_analyzing?(content) do
     word_count = String.split(content) |> length()
 
-    # Don't analyze very short responses
-    word_count > 10 and (
-      # Has emotional content
+    # Analyze if response has any substance
+    word_count > 5 and (
+      # Has emotional content or probe indicators
       has_probe_indicators?(content) or
       # Is long enough to contain depth
-      word_count > 30
+      word_count > 15
     )
   end
 
@@ -128,16 +128,63 @@ defmodule InterviewStudio.Agents.ProbeCoach do
   # Analysis
 
   defp analyze_async(content, state) do
+    # Emit signal that we're starting analysis (so debug panel shows activity)
+    emit_analyzing_signal(state)
+
     Task.start(fn ->
       case generate_probes(content, state) do
         {:ok, probes} when probes != [] ->
           emit_probes(probes, state)
         {:ok, []} ->
-          :ok
+          emit_no_probes_signal(state)
         {:error, reason} ->
           Logger.warning("[ProbeCoach] Analysis failed: #{inspect(reason)}")
+          emit_error_signal(reason, state)
       end
     end)
+  end
+
+  defp emit_analyzing_signal(_state) do
+    signal = %Jido.Signal{
+      type: "observer.status.analyzing",
+      source: "probe_coach",
+      id: Jido.Util.generate_id(),
+      data: %{
+        status: :analyzing,
+        message: "Looking for probe opportunities",
+        timestamp: DateTime.utc_now()
+      }
+    }
+    InterviewBus.publish(signal)
+    Logger.debug("[ProbeCoach] Starting probe analysis")
+  end
+
+  defp emit_no_probes_signal(_state) do
+    signal = %Jido.Signal{
+      type: "observer.status.complete",
+      source: "probe_coach",
+      id: Jido.Util.generate_id(),
+      data: %{
+        status: :complete,
+        message: "No probe opportunities found",
+        timestamp: DateTime.utc_now()
+      }
+    }
+    InterviewBus.publish(signal)
+  end
+
+  defp emit_error_signal(reason, _state) do
+    signal = %Jido.Signal{
+      type: "observer.status.error",
+      source: "probe_coach",
+      id: Jido.Util.generate_id(),
+      data: %{
+        status: :error,
+        reason: inspect(reason),
+        timestamp: DateTime.utc_now()
+      }
+    }
+    InterviewBus.publish(signal)
   end
 
   defp generate_probes(content, state) do
@@ -230,6 +277,20 @@ defmodule InterviewStudio.Agents.ProbeCoach do
       InterviewBus.publish(signal)
       Logger.debug("[ProbeCoach] Suggested probe: #{probe.topic} (#{probe.priority})")
     end)
+
+    # Emit completion signal
+    completion_signal = %Jido.Signal{
+      type: "observer.status.complete",
+      source: "probe_coach",
+      id: Jido.Util.generate_id(),
+      data: %{
+        status: :complete,
+        probes_found: length(probes),
+        message: "Found #{length(probes)} probe opportunities",
+        timestamp: DateTime.utc_now()
+      }
+    }
+    InterviewBus.publish(completion_signal)
 
     # Update state via message
     GenServer.cast(via_tuple(state.session_id), {:add_probes, probes})
