@@ -460,6 +460,32 @@ Each task should be independently completable and verifiable.
 
 ---
 
+## Phase 10: UI Enhancements
+
+### 10.1 Interview Split Layout
+- [x] **Task:** Change interview page to 2-column layout
+- **Acceptance Criteria:**
+  - Grid layout with chat on left (2/3), agent panel on right (1/3)
+  - Chat functionality unchanged
+  - Responsive on desktop widths
+- **Verification:**
+  - Visit http://localhost:4000/interview
+  - See two-column layout with chat on left
+
+### 10.2 Agent Activity Panel
+- [x] **Task:** Add real-time agent signal display
+- **Acceptance Criteria:**
+  - Subscribe to observer.** signals
+  - Display signals in scrolling list (most recent at top)
+  - Color-coded by signal type (themes=purple, probes=yellow, engagement=red, quotes=green)
+  - Show signal type and data preview
+  - Auto-scroll to show newest signals
+- **Verification:**
+  - Conduct interview
+  - See agent signals appear in panel as you chat
+
+---
+
 ## Summary
 
 | Phase | Tasks | Complete |
@@ -473,4 +499,5 @@ Each task should be independently completable and verifiable.
 | 7. Chat UI | 3 | 3/3 |
 | 8. Debug UI | 4 | 4/4 |
 | 9. Deploy | 4 | 4/4 |
-| **Total** | **34** | **34/34** |
+| 10. UI Enhancements | 2 | 2/2 |
+| **Total** | **36** | **36/36** |
