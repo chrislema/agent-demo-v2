@@ -120,6 +120,7 @@ defmodule InterviewStudio.Agents.EngagementMonitor do
       has_enthusiasm: has_enthusiasm?(content),
       has_resistance: has_resistance?(content),
       has_elaboration: has_elaboration?(content),
+      wants_wrap_up: wants_to_wrap_up?(content),
       is_terse: word_count < 5,
       is_verbose: word_count > 100,
       sentiment: estimate_sentiment(content)
@@ -139,6 +140,17 @@ defmodule InterviewStudio.Agents.EngagementMonitor do
     count = Enum.count(resistance_markers, fn marker -> String.contains?(downcased, marker) end)
     # Only flag if multiple markers or response is short
     count >= 2 or (count >= 1 and String.length(text) < 30)
+  end
+
+  defp wants_to_wrap_up?(text) do
+    wrap_up_markers = [
+      "wrap up", "let's wrap", "wrapping up", "finish", "let's finish",
+      "move on", "let's move on", "already explained", "already said",
+      "end the interview", "that's enough", "i'm done", "let's end",
+      "can we finish", "ready to finish", "time to wrap"
+    ]
+    downcased = String.downcase(text)
+    Enum.any?(wrap_up_markers, fn marker -> String.contains?(downcased, marker) end)
   end
 
   defp has_elaboration?(text) do
@@ -167,39 +179,45 @@ defmodule InterviewStudio.Agents.EngagementMonitor do
   # Engagement calculation
 
   defp calculate_engagement(indicators, state) do
-    # Score components
-    length_score = cond do
-      indicators.is_terse -> -2
-      indicators.is_verbose -> 1
-      indicators.word_count > 20 -> 1
-      indicators.word_count > 10 -> 0
-      true -> -1
+    # If user explicitly wants to wrap up, immediately go to critical
+    if indicators.wants_wrap_up do
+      new_trend = calculate_trend(:critical, state.history)
+      {:critical, new_trend}
+    else
+      # Score components
+      length_score = cond do
+        indicators.is_terse -> -2
+        indicators.is_verbose -> 1
+        indicators.word_count > 20 -> 1
+        indicators.word_count > 10 -> 0
+        true -> -1
+      end
+
+      enthusiasm_score = if indicators.has_enthusiasm, do: 1, else: 0
+      resistance_score = if indicators.has_resistance, do: -2, else: 0
+      elaboration_score = if indicators.has_elaboration, do: 1, else: 0
+
+      sentiment_score = case indicators.sentiment do
+        :positive -> 1
+        :negative -> -1
+        :neutral -> 0
+      end
+
+      total_score = length_score + enthusiasm_score + resistance_score + elaboration_score + sentiment_score
+
+      # Map to level
+      new_level = cond do
+        total_score >= 2 -> :high
+        total_score >= 0 -> :medium
+        total_score >= -2 -> :low
+        true -> :critical
+      end
+
+      # Calculate trend based on history
+      new_trend = calculate_trend(new_level, state.history)
+
+      {new_level, new_trend}
     end
-
-    enthusiasm_score = if indicators.has_enthusiasm, do: 1, else: 0
-    resistance_score = if indicators.has_resistance, do: -2, else: 0
-    elaboration_score = if indicators.has_elaboration, do: 1, else: 0
-
-    sentiment_score = case indicators.sentiment do
-      :positive -> 1
-      :negative -> -1
-      :neutral -> 0
-    end
-
-    total_score = length_score + enthusiasm_score + resistance_score + elaboration_score + sentiment_score
-
-    # Map to level
-    new_level = cond do
-      total_score >= 2 -> :high
-      total_score >= 0 -> :medium
-      total_score >= -2 -> :low
-      true -> :critical
-    end
-
-    # Calculate trend based on history
-    new_trend = calculate_trend(new_level, state.history)
-
-    {new_level, new_trend}
   end
 
   defp calculate_trend(_current_level, history) when length(history) < 3, do: :stable

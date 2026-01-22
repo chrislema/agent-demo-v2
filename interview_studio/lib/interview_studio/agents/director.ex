@@ -139,9 +139,13 @@ defmodule InterviewStudio.Agents.Director do
 
   @impl true
   def handle_call(:get_next_action, _from, state) do
-    action = decide_next_action(state)
+    # Check engagement monitor directly (sync) - don't rely only on async signals
+    current_engagement = get_current_engagement(state.session_id)
+    state_with_engagement = %{state | engagement_level: current_engagement}
+
+    action = decide_next_action(state_with_engagement)
     # Update state based on action taken
-    new_state = apply_action_to_state(action, state)
+    new_state = apply_action_to_state(action, state_with_engagement)
     {:reply, action, new_state}
   end
 
@@ -225,10 +229,52 @@ defmodule InterviewStudio.Agents.Director do
 
   defp handle_signal(_signal, state), do: state
 
+  # Wrap-up detection - check user message directly for wrap-up cues
+  # Get engagement level directly from Engagement Monitor (sync call)
+  defp get_current_engagement(session_id) do
+    alias InterviewStudio.Agents.EngagementMonitor
+    try do
+      EngagementMonitor.get_level(session_id)
+    rescue
+      _ -> :medium  # Default if monitor not available
+    catch
+      :exit, _ -> :medium
+    end
+  end
+
+  defp user_wants_to_wrap_up?(nil), do: false
+  defp user_wants_to_wrap_up?(message) do
+    wrap_up_markers = [
+      "wrap up", "let's wrap", "wrapping up", "finish", "let's finish",
+      "move on", "let's move on", "already explained", "already said",
+      "end the interview", "that's enough", "i'm done", "let's end",
+      "can we finish", "ready to finish", "time to wrap", "let's stop"
+    ]
+    downcased = String.downcase(message)
+    Enum.any?(wrap_up_markers, fn marker -> String.contains?(downcased, marker) end)
+  end
+
   # Decision logic
 
   defp decide_next_action(state) do
     cond do
+      # User explicitly wants to wrap up - check directly (don't wait for async signal)
+      user_wants_to_wrap_up?(state.last_user_message) ->
+        # Skip directly to synthesis if not there yet, or to closing if already past
+        if state.current_phase in [:synthesis, :closing] do
+          %{
+            type: :transition,
+            to_phase: :closing,
+            reason: "User requested wrap up"
+          }
+        else
+          %{
+            type: :transition,
+            to_phase: :synthesis,
+            reason: "User requested wrap up"
+          }
+        end
+
       # Critical engagement - wrap up
       state.engagement_level == :critical ->
         %{
