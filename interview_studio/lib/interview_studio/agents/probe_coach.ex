@@ -319,8 +319,9 @@ defmodule InterviewStudio.Agents.ProbeCoach do
       api_key = System.get_env("AgentDemo_Groq_API_Key") || ""
 
       model = %Jido.AI.Model{
-        provider: config[:provider] || :groq,
-        model: config[:model] || "meta-llama/llama-4-scout-17b-16e-instruct",
+        provider: :openai,
+        base_url: "https://api.groq.com/openai/v1",
+        model: config[:model] || "llama-3.3-70b-versatile",
         api_key: api_key,
         temperature: config[:temperature] || 0.4,
         max_tokens: config[:max_tokens] || 400
@@ -354,8 +355,8 @@ defmodule InterviewStudio.Agents.ProbeCoach do
 
   defp default_llm_config do
     %{
-      provider: :groq,
-      model: "meta-llama/llama-4-scout-17b-16e-instruct",
+      provider: :openai,
+      model: "llama-3.3-70b-versatile",
       temperature: 0.4
     }
   end

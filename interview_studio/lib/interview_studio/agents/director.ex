@@ -547,12 +547,13 @@ defmodule InterviewStudio.Agents.Director do
 
   defp call_llm(system_prompt, user_prompt, config) do
     try do
-      # Build Model struct with API key from environment (Groq)
+      # Build Model struct with API key from environment (Groq via OpenAI-compatible API)
       api_key = System.get_env("AgentDemo_Groq_API_Key") || ""
 
       model = %Jido.AI.Model{
-        provider: config[:provider] || :groq,
-        model: config[:model] || "meta-llama/llama-4-scout-17b-16e-instruct",
+        provider: :openai,
+        base_url: "https://api.groq.com/openai/v1",
+        model: config[:model] || "llama-3.3-70b-versatile",
         api_key: api_key,
         temperature: config[:temperature] || 0.7,
         max_tokens: config[:max_tokens] || 1000
@@ -585,8 +586,8 @@ defmodule InterviewStudio.Agents.Director do
 
   defp default_llm_config do
     %{
-      provider: :groq,
-      model: "meta-llama/llama-4-scout-17b-16e-instruct",
+      provider: :openai,
+      model: "llama-3.3-70b-versatile",
       temperature: 0.7
     }
   end
