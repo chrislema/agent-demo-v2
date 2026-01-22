@@ -128,8 +128,14 @@ defmodule InterviewStudioWeb.InterviewLive do
   end
 
   @impl true
-  def handle_event("update_input", %{"value" => value}, socket) do
+  def handle_event("update_input", %{"message" => value}, socket) do
     {:noreply, assign(socket, input_value: value)}
+  end
+
+  @impl true
+  def handle_event("update_input", _params, socket) do
+    # Fallback for other param structures
+    {:noreply, socket}
   end
 
   @impl true
@@ -234,12 +240,12 @@ defmodule InterviewStudioWeb.InterviewLive do
                 </button>
               </div>
             <% else %>
-              <form phx-submit="send_message" class="flex gap-3">
+              <form phx-submit="send_message" phx-change="update_input" class="flex gap-3">
                 <input
                   type="text"
                   name="message"
                   value={@input_value}
-                  phx-change="update_input"
+                  phx-debounce="100"
                   placeholder="Type your response..."
                   autocomplete="off"
                   disabled={@loading}
