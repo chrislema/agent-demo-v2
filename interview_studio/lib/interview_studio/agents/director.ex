@@ -444,12 +444,12 @@ defmodule InterviewStudio.Agents.Director do
 
   defp call_llm(system_prompt, user_prompt, config) do
     try do
-      # Build Model struct with API key from environment
-      api_key = System.get_env("ANTHROPIC_API_KEY") || ""
+      # Build Model struct with API key from environment (Groq)
+      api_key = System.get_env("AgentDemo_Groq_API_Key") || ""
 
       model = %Jido.AI.Model{
-        provider: config[:provider] || :anthropic,
-        model: config[:model] || "claude-sonnet-4-20250514",
+        provider: config[:provider] || :groq,
+        model: config[:model] || "meta-llama/llama-4-scout-17b-16e-instruct",
         api_key: api_key,
         temperature: config[:temperature] || 0.7,
         max_tokens: config[:max_tokens] || 1000
@@ -482,8 +482,8 @@ defmodule InterviewStudio.Agents.Director do
 
   defp default_llm_config do
     %{
-      provider: :anthropic,
-      model: "claude-sonnet-4-20250514",
+      provider: :groq,
+      model: "meta-llama/llama-4-scout-17b-16e-instruct",
       temperature: 0.7
     }
   end

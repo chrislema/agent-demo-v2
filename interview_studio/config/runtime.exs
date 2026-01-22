@@ -1,5 +1,12 @@
 import Config
 
+# Configure jido_ai with Groq API key
+if groq_api_key = System.get_env("AgentDemo_Groq_API_Key") do
+  config :jido_ai, :keyring, %{
+    groq_api_key: groq_api_key
+  }
+end
+
 # config/runtime.exs is executed for all environments, including
 # during releases. It is executed after compilation and before the
 # system starts, so it is typically used to load production configuration
