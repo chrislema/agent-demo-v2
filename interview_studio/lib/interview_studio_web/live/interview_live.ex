@@ -143,6 +143,9 @@ defmodule InterviewStudioWeb.InterviewLive do
     # Stop current session
     Session.stop_session(socket.assigns.session_id)
 
+    # Clear the signal bus history
+    InterviewBus.reset()
+
     # Start fresh
     {:ok, session_id} = Session.start_session()
 
@@ -180,8 +183,12 @@ defmodule InterviewStudioWeb.InterviewLive do
         <header class="text-center mb-8">
           <h1 class="text-3xl font-bold text-white mb-2">The Story of You</h1>
           <p class="text-slate-400">Let's discover what makes you unique</p>
-          <div class="mt-2 text-sm text-slate-500">
-            Phase: <span class="text-blue-400"><%= format_phase(@phase) %></span>
+          <div class="mt-2 text-sm text-slate-500 flex items-center justify-center gap-3">
+            <span>Phase: <span class="text-blue-400"><%= format_phase(@phase) %></span></span>
+            <span class="text-slate-600">|</span>
+            <button phx-click="new_interview" class="text-slate-400 hover:text-white transition-colors">
+              Reset Conversation
+            </button>
           </div>
         </header>
 
