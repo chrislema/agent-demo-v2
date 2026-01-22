@@ -285,9 +285,14 @@ defmodule InterviewStudio.Agents.Director do
               reason: "Synthesis complete, user confirmed"
             }
 
-          # Synthesis already delivered - wait for user response
-          state.synthesis_delivered ->
-            %{type: :wait}
+          # Synthesis already delivered - user response triggers closing
+          # Don't wait, just transition if they've said anything
+          state.synthesis_delivered and state.last_user_message != nil ->
+            %{
+              type: :transition,
+              to_phase: :closing,
+              reason: "Synthesis delivered, moving to closing"
+            }
 
           # First time - deliver synthesis
           true ->
@@ -551,8 +556,8 @@ defmodule InterviewStudio.Agents.Director do
       api_key = System.get_env("AgentDemo_Groq_API_Key") || ""
 
       model = %Jido.AI.Model{
-        provider: :openai,
-        base_url: "https://api.groq.com/openai/v1",
+        provider: :openrouter,
+        base_url: "https://api.groq.com/openai/v1/chat/completions",
         model: config[:model] || "meta-llama/llama-4-scout-17b-16e-instruct",
         api_key: api_key,
         temperature: config[:temperature] || 0.7,
@@ -586,7 +591,7 @@ defmodule InterviewStudio.Agents.Director do
 
   defp default_llm_config do
     %{
-      provider: :openai,
+      provider: :openrouter,
       model: "meta-llama/llama-4-scout-17b-16e-instruct",
       temperature: 0.7
     }
