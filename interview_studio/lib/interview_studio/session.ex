@@ -1,0 +1,262 @@
+defmodule InterviewStudio.Session do
+  @moduledoc """
+  Session manager - coordinates all agents for an interview session.
+
+  Responsibilities:
+  - Start/stop FSM, Director, and all observers together
+  - Provide unified API for session management
+  - Track session state across all components
+  """
+
+  require Logger
+
+  alias InterviewStudio.Pipeline.InterviewFSM
+  alias InterviewStudio.Agents.{Director, Scribe, StoryAnalyst, ProbeCoach, EngagementMonitor}
+  alias InterviewStudio.InterviewBus
+
+  @doc """
+  Start a new interview session with all agents.
+  Returns {:ok, session_id} or {:error, reason}
+  """
+  def start_session(opts \\ []) do
+    session_id = Keyword.get(opts, :session_id, generate_session_id())
+
+    with {:ok, _fsm} <- start_fsm(session_id),
+         {:ok, _director} <- start_director(session_id, opts),
+         {:ok, _scribe} <- start_scribe(session_id),
+         {:ok, _analyst} <- start_story_analyst(session_id, opts),
+         {:ok, _coach} <- start_probe_coach(session_id, opts),
+         {:ok, _monitor} <- start_engagement_monitor(session_id) do
+
+      Logger.info("[Session] Started session #{session_id}")
+      {:ok, session_id}
+    else
+      {:error, reason} ->
+        Logger.error("[Session] Failed to start session: #{inspect(reason)}")
+        # Attempt cleanup
+        stop_session(session_id)
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Stop an interview session and all its agents.
+  """
+  def stop_session(session_id) do
+    # Stop all agents (ignore errors from already-stopped processes)
+    stop_agent(:fsm, session_id)
+    stop_agent(:director, session_id)
+    stop_agent(:scribe, session_id)
+    stop_agent(:story_analyst, session_id)
+    stop_agent(:probe_coach, session_id)
+    stop_agent(:engagement_monitor, session_id)
+
+    Logger.info("[Session] Stopped session #{session_id}")
+    :ok
+  end
+
+  @doc """
+  Get the combined state of a session.
+  """
+  def get_session_state(session_id) do
+    %{
+      session_id: session_id,
+      fsm_phase: get_fsm_phase(session_id),
+      director: get_director_state(session_id),
+      scribe: get_scribe_state(session_id),
+      engagement: get_engagement_level(session_id)
+    }
+  end
+
+  @doc """
+  Process a user message through the session.
+  Returns {:ok, response} or {:error, reason}
+  """
+  def process_message(session_id, message) do
+    # Record the message with Director
+    :ok = Director.process_user_message(session_id, message)
+
+    # Get Director's next action
+    action = Director.get_next_action(session_id)
+
+    # Handle the action
+    handle_action(session_id, action)
+  end
+
+  @doc """
+  Transition the session to a new phase.
+  """
+  def transition_to(session_id, phase, reason \\ "Manual transition") do
+    InterviewFSM.transition(session_id, phase, reason)
+  end
+
+  @doc """
+  Get the current phase of the session.
+  """
+  def current_phase(session_id) do
+    InterviewFSM.current_phase(session_id)
+  end
+
+  # Private functions
+
+  defp start_fsm(session_id) do
+    InterviewFSM.start_link(session_id: session_id)
+  end
+
+  defp start_director(session_id, opts) do
+    llm_config = Keyword.get(opts, :llm_config, %{})
+    Director.start_link(session_id: session_id, llm_config: llm_config)
+  end
+
+  defp start_scribe(session_id) do
+    Scribe.start_link(session_id: session_id)
+  end
+
+  defp start_story_analyst(session_id, opts) do
+    llm_config = Keyword.get(opts, :llm_config, %{})
+    StoryAnalyst.start_link(session_id: session_id, llm_config: llm_config)
+  end
+
+  defp start_probe_coach(session_id, opts) do
+    llm_config = Keyword.get(opts, :llm_config, %{})
+    ProbeCoach.start_link(session_id: session_id, llm_config: llm_config)
+  end
+
+  defp start_engagement_monitor(session_id) do
+    EngagementMonitor.start_link(session_id: session_id)
+  end
+
+  defp stop_agent(type, session_id) do
+    case Registry.lookup(InterviewStudio.SessionRegistry, {type, session_id}) do
+      [{pid, _}] ->
+        GenServer.stop(pid, :normal, 5000)
+      [] ->
+        :ok
+    end
+  rescue
+    _ -> :ok
+  end
+
+  defp get_fsm_phase(session_id) do
+    case InterviewFSM.current_phase(session_id) do
+      phase when is_atom(phase) -> phase
+      _ -> :unknown
+    end
+  rescue
+    _ -> :unknown
+  end
+
+  defp get_director_state(session_id) do
+    Director.get_state(session_id)
+  rescue
+    _ -> nil
+  end
+
+  defp get_scribe_state(session_id) do
+    Scribe.get_state(session_id)
+  rescue
+    _ -> nil
+  end
+
+  defp get_engagement_level(session_id) do
+    EngagementMonitor.get_level(session_id)
+  rescue
+    _ -> :unknown
+  end
+
+  defp handle_action(session_id, %{type: :transition, to_phase: phase, reason: reason}) do
+    case InterviewFSM.transition(session_id, phase, reason) do
+      {:ok, ^phase} ->
+        # Get the opening response if transitioning to opening
+        if phase == :opening do
+          action = Director.get_next_action(session_id)
+          handle_action(session_id, action)
+        else
+          {:ok, nil}
+        end
+      {:error, err} ->
+        {:error, err}
+    end
+  end
+
+  defp handle_action(session_id, %{type: :ask, question: question} = action) do
+    context = Map.take(action, [:question, :question_id, :source])
+
+    case Director.generate_response(session_id, :ask, context) do
+      {:ok, response} ->
+        publish_host_utterance(response, action, session_id)
+        {:ok, response}
+      {:error, _reason} ->
+        # Fallback to the raw question
+        publish_host_utterance(question, action, session_id)
+        {:ok, question}
+    end
+  end
+
+  defp handle_action(session_id, %{type: :probe, question: question, topic: topic}) do
+    context = %{question: question, topic: topic}
+
+    case Director.generate_response(session_id, :probe, context) do
+      {:ok, response} ->
+        publish_host_utterance(response, %{type: :probe, topic: topic}, session_id)
+        {:ok, response}
+      {:error, _reason} ->
+        publish_host_utterance(question, %{type: :probe, topic: topic}, session_id)
+        {:ok, question}
+    end
+  end
+
+  defp handle_action(session_id, %{type: :synthesize, themes: themes}) do
+    context = %{themes: themes}
+
+    case Director.generate_response(session_id, :synthesize, context) do
+      {:ok, response} ->
+        publish_host_utterance(response, %{type: :synthesize}, session_id)
+        {:ok, response}
+      {:error, _reason} ->
+        fallback = "I've really enjoyed learning about you. Let me share what I've heard..."
+        publish_host_utterance(fallback, %{type: :synthesize}, session_id)
+        {:ok, fallback}
+    end
+  end
+
+  defp handle_action(session_id, %{type: :close}) do
+    case Director.generate_response(session_id, :close, %{}) do
+      {:ok, response} ->
+        publish_host_utterance(response, %{type: :close}, session_id)
+        {:ok, response}
+      {:error, _reason} ->
+        fallback = "Thank you so much for sharing your story with me. This has been wonderful!"
+        publish_host_utterance(fallback, %{type: :close}, session_id)
+        {:ok, fallback}
+    end
+  end
+
+  defp handle_action(_session_id, %{type: :wait}) do
+    {:ok, nil}
+  end
+
+  defp handle_action(_session_id, action) do
+    Logger.warning("[Session] Unknown action type: #{inspect(action)}")
+    {:ok, nil}
+  end
+
+  defp publish_host_utterance(content, action, _session_id) do
+    signal = %Jido.Signal{
+      type: "interview.utterance.host",
+      source: "director",
+      id: Jido.Util.generate_id(),
+      data: %{
+        content: content,
+        timestamp: DateTime.utc_now(),
+        action_type: action[:type],
+        question_id: action[:question_id]
+      }
+    }
+    InterviewBus.publish(signal)
+  end
+
+  defp generate_session_id do
+    :crypto.strong_rand_bytes(8) |> Base.url_encode64(padding: false)
+  end
+end

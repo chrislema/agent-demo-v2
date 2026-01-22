@@ -201,7 +201,7 @@ Each task should be independently completable and verifiable.
   ```
 
 ### 4.3 Director LLM Integration
-- [ ] **Task:** Add LLM-powered response generation
+- [x] **Task:** Add LLM-powered response generation
 - **Acceptance Criteria:**
   - Director can generate natural language responses using jido_ai
   - Responses incorporate conversation context
@@ -219,7 +219,7 @@ Each task should be independently completable and verifiable.
 ## Phase 5: Observer Agents
 
 ### 5.1 Scribe Agent
-- [ ] **Task:** Create Scribe agent for documentation
+- [x] **Task:** Create Scribe agent for documentation
 - **Acceptance Criteria:**
   - `InterviewStudio.Agents.Scribe` GenServer created
   - Subscribes to all utterances and phase changes
@@ -238,7 +238,7 @@ Each task should be independently completable and verifiable.
   ```
 
 ### 5.2 Story Analyst Agent
-- [ ] **Task:** Create Story Analyst for theme extraction
+- [x] **Task:** Create Story Analyst for theme extraction
 - **Acceptance Criteria:**
   - `InterviewStudio.Agents.StoryAnalyst` GenServer created
   - Subscribes to user and host utterances
@@ -253,7 +253,7 @@ Each task should be independently completable and verifiable.
   ```
 
 ### 5.3 Probe Coach Agent
-- [ ] **Task:** Create Probe Coach for follow-up suggestions
+- [x] **Task:** Create Probe Coach for follow-up suggestions
 - **Acceptance Criteria:**
   - `InterviewStudio.Agents.ProbeCoach` GenServer created
   - Subscribes to user utterances
@@ -268,7 +268,7 @@ Each task should be independently completable and verifiable.
   ```
 
 ### 5.4 Engagement Monitor Agent
-- [ ] **Task:** Create Engagement Monitor for reading the room
+- [x] **Task:** Create Engagement Monitor for reading the room
 - **Acceptance Criteria:**
   - `InterviewStudio.Agents.EngagementMonitor` GenServer created
   - Subscribes to user utterances
@@ -288,7 +288,7 @@ Each task should be independently completable and verifiable.
 ## Phase 6: Session Orchestration
 
 ### 6.1 Interview Session
-- [ ] **Task:** Create session manager to coordinate all agents
+- [x] **Task:** Create session manager to coordinate all agents
 - **Acceptance Criteria:**
   - `InterviewStudio.Session` module created
   - `start_session/1` starts FSM, Director, and all observers
@@ -305,7 +305,7 @@ Each task should be independently completable and verifiable.
   ```
 
 ### 6.2 Message Flow Integration
-- [ ] **Task:** Wire up complete message flow
+- [x] **Task:** Wire up complete message flow
 - **Acceptance Criteria:**
   - User message -> Director -> publishes signal -> all observers receive
   - Observers publish insights -> Director receives
@@ -324,7 +324,7 @@ Each task should be independently completable and verifiable.
 ## Phase 7: Chat Interface
 
 ### 7.1 Interview LiveView
-- [ ] **Task:** Create main interview chat interface
+- [x] **Task:** Create main interview chat interface
 - **Acceptance Criteria:**
   - `InterviewStudioWeb.InterviewLive` LiveView created
   - Clean chat UI with message input
@@ -337,7 +337,7 @@ Each task should be independently completable and verifiable.
   - Send message and receive response
 
 ### 7.2 Message Handling
-- [ ] **Task:** Wire LiveView to session
+- [x] **Task:** Wire LiveView to session
 - **Acceptance Criteria:**
   - Form submission sends message to Director
   - Response displayed in chat
@@ -349,7 +349,7 @@ Each task should be independently completable and verifiable.
   - No errors in console
 
 ### 7.3 Session Lifecycle
-- [ ] **Task:** Handle session start/end in LiveView
+- [x] **Task:** Handle session start/end in LiveView
 - **Acceptance Criteria:**
   - New session created on page load
   - Session cleaned up on disconnect
@@ -365,7 +365,7 @@ Each task should be independently completable and verifiable.
 ## Phase 8: Debug Interface
 
 ### 8.1 Debug LiveView
-- [ ] **Task:** Create debug view showing agent activity
+- [x] **Task:** Create debug view showing agent activity
 - **Acceptance Criteria:**
   - `InterviewStudioWeb.DebugLive` LiveView created
   - Shows current phase in visual FSM diagram
@@ -376,7 +376,7 @@ Each task should be independently completable and verifiable.
   - See phase diagram and signal stream
 
 ### 8.2 Signal Stream Component
-- [ ] **Task:** Create real-time signal display
+- [x] **Task:** Create real-time signal display
 - **Acceptance Criteria:**
   - LiveComponent showing signal stream
   - Color-coded by signal category
@@ -387,7 +387,7 @@ Each task should be independently completable and verifiable.
   - See signals appear in real-time
 
 ### 8.3 Agent Status Panels
-- [ ] **Task:** Create agent status displays
+- [x] **Task:** Create agent status displays
 - **Acceptance Criteria:**
   - Panel for each agent showing current state
   - Director: phase, pending questions, themes
@@ -399,7 +399,7 @@ Each task should be independently completable and verifiable.
   - Panels update as interview progresses
 
 ### 8.4 Phase Diagram
-- [ ] **Task:** Create visual FSM representation
+- [x] **Task:** Create visual FSM representation
 - **Acceptance Criteria:**
   - Shows all 6 phases as nodes
   - Current phase highlighted
@@ -424,7 +424,7 @@ Each task should be independently completable and verifiable.
   - App continues functioning
 
 ### 9.2 Configuration
-- [ ] **Task:** Externalize configuration
+- [x] **Task:** Externalize configuration
 - **Acceptance Criteria:**
   - LLM provider/model configurable via env vars
   - API keys loaded from environment
@@ -432,11 +432,11 @@ Each task should be independently completable and verifiable.
 - **Verification:**
   ```bash
   flyctl secrets list
-  # Expected: ANTHROPIC_API_KEY set
+  # Expected: AgentDemo_Groq_API_Key set
   ```
 
 ### 9.3 Dockerfile
-- [ ] **Task:** Create production Dockerfile
+- [x] **Task:** Create production Dockerfile
 - **Acceptance Criteria:**
   - Multi-stage Dockerfile for Elixir release
   - Assets compiled
@@ -467,10 +467,10 @@ Each task should be independently completable and verifiable.
 | 1. Foundation | 4 | 4/4 |
 | 2. Signals | 8 | 8/8 |
 | 3. Pipeline | 2 | 2/2 |
-| 4. Director | 3 | 1/3 |
-| 5. Observers | 4 | 0/4 |
-| 6. Orchestration | 2 | 0/2 |
-| 7. Chat UI | 3 | 0/3 |
-| 8. Debug UI | 4 | 0/4 |
-| 9. Deploy | 4 | 0/4 |
-| **Total** | **34** | **15/34** |
+| 4. Director | 3 | 3/3 |
+| 5. Observers | 4 | 4/4 |
+| 6. Orchestration | 2 | 2/2 |
+| 7. Chat UI | 3 | 3/3 |
+| 8. Debug UI | 4 | 4/4 |
+| 9. Deploy | 4 | 2/4 |
+| **Total** | **34** | **32/34** |

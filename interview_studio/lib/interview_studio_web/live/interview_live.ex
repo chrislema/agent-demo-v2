@@ -1,0 +1,261 @@
+defmodule InterviewStudioWeb.InterviewLive do
+  @moduledoc """
+  Main interview chat interface.
+  Clean, minimal UI for conducting interviews.
+  """
+
+  use InterviewStudioWeb, :live_view
+
+  alias InterviewStudio.Session
+  alias InterviewStudio.InterviewBus
+
+  @impl true
+  def mount(_params, _session, socket) do
+    # Start a new session
+    {:ok, session_id} = Session.start_session()
+
+    # Subscribe to host utterances for this session
+    if connected?(socket) do
+      InterviewBus.subscribe("interview.utterance.host")
+      InterviewBus.subscribe("interview.phase.**")
+    end
+
+    # Auto-start the interview
+    send(self(), :start_interview)
+
+    {:ok, assign(socket,
+      session_id: session_id,
+      messages: [],
+      input_value: "",
+      loading: true,
+      phase: :preparation,
+      interview_complete: false
+    )}
+  end
+
+  @impl true
+  def handle_info(:start_interview, socket) do
+    # Transition to opening phase and get first message
+    case Session.transition_to(socket.assigns.session_id, :opening, "Interview started") do
+      {:ok, :opening} ->
+        case Session.process_message(socket.assigns.session_id, "") do
+          {:ok, response} when is_binary(response) ->
+            messages = [%{role: :host, content: response, timestamp: DateTime.utc_now()}]
+            {:noreply, assign(socket, messages: messages, loading: false, phase: :opening)}
+
+          _ ->
+            {:noreply, assign(socket, loading: false, phase: :opening)}
+        end
+
+      _ ->
+        {:noreply, assign(socket, loading: false)}
+    end
+  end
+
+  @impl true
+  def handle_info({:signal, %{type: "interview.phase.entered"} = signal}, socket) do
+    phase = signal.data.phase_name
+    interview_complete = phase == :closing
+
+    {:noreply, assign(socket, phase: phase, interview_complete: interview_complete)}
+  end
+
+  @impl true
+  def handle_info({:signal, _signal}, socket) do
+    # Ignore other signals for now
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:response, nil}, socket) do
+    {:noreply, assign(socket, loading: false)}
+  end
+
+  @impl true
+  def handle_info({:response, response}, socket) do
+    host_msg = %{role: :host, content: response, timestamp: DateTime.utc_now()}
+    messages = socket.assigns.messages ++ [host_msg]
+
+    {:noreply, assign(socket, messages: messages, loading: false)}
+  end
+
+  @impl true
+  def handle_info({:error, _reason}, socket) do
+    {:noreply, assign(socket, loading: false)}
+  end
+
+  @impl true
+  def handle_event("send_message", %{"message" => message}, socket) when message != "" do
+    # Add user message to display
+    user_msg = %{role: :user, content: message, timestamp: DateTime.utc_now()}
+    messages = socket.assigns.messages ++ [user_msg]
+
+    # Show loading state
+    socket = assign(socket, messages: messages, input_value: "", loading: true)
+
+    # Process async to not block
+    session_id = socket.assigns.session_id
+    lv_pid = self()
+
+    Task.start(fn ->
+      case Session.process_message(session_id, message) do
+        {:ok, response} when is_binary(response) ->
+          send(lv_pid, {:response, response})
+
+        {:ok, nil} ->
+          send(lv_pid, {:response, nil})
+
+        {:error, reason} ->
+          send(lv_pid, {:error, reason})
+      end
+    end)
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("send_message", _params, socket) do
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("update_input", %{"value" => value}, socket) do
+    {:noreply, assign(socket, input_value: value)}
+  end
+
+  @impl true
+  def handle_event("new_interview", _params, socket) do
+    # Stop current session
+    Session.stop_session(socket.assigns.session_id)
+
+    # Start fresh
+    {:ok, session_id} = Session.start_session()
+
+    if connected?(socket) do
+      InterviewBus.subscribe("interview.utterance.host")
+      InterviewBus.subscribe("interview.phase.**")
+    end
+
+    send(self(), :start_interview)
+
+    {:noreply, assign(socket,
+      session_id: session_id,
+      messages: [],
+      input_value: "",
+      loading: true,
+      phase: :preparation,
+      interview_complete: false
+    )}
+  end
+
+  @impl true
+  def terminate(_reason, socket) do
+    Session.stop_session(socket.assigns.session_id)
+    :ok
+  end
+
+  @impl true
+  def render(assigns) do
+    ~H"""
+    <div class="min-h-screen bg-gradient-to-b from-slate-900 to-slate-800 text-white">
+      <div class="max-w-2xl mx-auto px-4 py-8">
+        <!-- Header -->
+        <header class="text-center mb-8">
+          <h1 class="text-3xl font-bold text-white mb-2">The Story of You</h1>
+          <p class="text-slate-400">Let's discover what makes you unique</p>
+          <div class="mt-2 text-sm text-slate-500">
+            Phase: <span class="text-blue-400"><%= format_phase(@phase) %></span>
+          </div>
+        </header>
+
+        <!-- Chat Messages -->
+        <div class="bg-slate-800/50 rounded-2xl p-6 mb-6 min-h-[400px] max-h-[500px] overflow-y-auto" id="chat-messages" phx-hook="ScrollToBottom">
+          <%= if @messages == [] and @loading do %>
+            <div class="flex items-center justify-center h-full">
+              <div class="animate-pulse text-slate-400">Starting interview...</div>
+            </div>
+          <% else %>
+            <div class="space-y-4">
+              <%= for message <- @messages do %>
+                <div class={[
+                  "flex",
+                  if(message.role == :user, do: "justify-end", else: "justify-start")
+                ]}>
+                  <div class={[
+                    "max-w-[80%] rounded-2xl px-4 py-3",
+                    if(message.role == :user,
+                      do: "bg-blue-600 text-white",
+                      else: "bg-slate-700 text-slate-100")
+                  ]}>
+                    <p class="whitespace-pre-wrap"><%= message.content %></p>
+                  </div>
+                </div>
+              <% end %>
+
+              <%= if @loading do %>
+                <div class="flex justify-start">
+                  <div class="bg-slate-700 rounded-2xl px-4 py-3">
+                    <div class="flex space-x-1">
+                      <div class="w-2 h-2 bg-slate-400 rounded-full animate-bounce"></div>
+                      <div class="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style="animation-delay: 0.1s"></div>
+                      <div class="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style="animation-delay: 0.2s"></div>
+                    </div>
+                  </div>
+                </div>
+              <% end %>
+            </div>
+          <% end %>
+        </div>
+
+        <!-- Input Form -->
+        <%= if @interview_complete do %>
+          <div class="text-center">
+            <p class="text-slate-400 mb-4">Interview complete! Thank you for sharing your story.</p>
+            <button
+              phx-click="new_interview"
+              class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-xl transition-colors"
+            >
+              Start New Interview
+            </button>
+          </div>
+        <% else %>
+          <form phx-submit="send_message" class="flex gap-3">
+            <input
+              type="text"
+              name="message"
+              value={@input_value}
+              phx-change="update_input"
+              placeholder="Type your response..."
+              autocomplete="off"
+              disabled={@loading}
+              class="flex-1 bg-slate-700 border-0 rounded-xl px-4 py-3 text-white placeholder-slate-400 focus:ring-2 focus:ring-blue-500 focus:outline-none disabled:opacity-50"
+            />
+            <button
+              type="submit"
+              disabled={@loading or @input_value == ""}
+              class="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 disabled:cursor-not-allowed text-white font-semibold py-3 px-6 rounded-xl transition-colors"
+            >
+              Send
+            </button>
+          </form>
+        <% end %>
+
+        <!-- Debug Link -->
+        <div class="mt-8 text-center">
+          <a href="/debug" class="text-slate-500 hover:text-slate-400 text-sm">
+            View Debug Interface
+          </a>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  defp format_phase(:preparation), do: "Preparing"
+  defp format_phase(:opening), do: "Opening"
+  defp format_phase(:core_questions), do: "Core Questions"
+  defp format_phase(:probing), do: "Probing Deeper"
+  defp format_phase(:synthesis), do: "Synthesis"
+  defp format_phase(:closing), do: "Closing"
+  defp format_phase(phase), do: to_string(phase)
+end
