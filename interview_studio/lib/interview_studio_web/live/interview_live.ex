@@ -308,40 +308,110 @@ defmodule InterviewStudioWeb.InterviewLive do
   defp format_phase(:closing), do: "Closing"
   defp format_phase(phase), do: to_string(phase)
 
-  # Signal formatting helpers for agent panel
+  # Signal formatting helpers for agent panel - human readable messages
   defp signal_color(type) do
     cond do
       String.contains?(type, "insight.theme") -> "text-purple-400"
       String.contains?(type, "insight.pattern") -> "text-purple-300"
       String.contains?(type, "suggestion.probe") -> "text-yellow-400"
-      String.contains?(type, "status.engagement") -> "text-red-400"
+      String.contains?(type, "status.engagement") -> "text-orange-400"
       String.contains?(type, "record.quote") -> "text-green-400"
       String.contains?(type, "record.summary") -> "text-green-300"
+      String.contains?(type, "phase.entered") -> "text-blue-400"
+      String.contains?(type, "phase.completed") -> "text-blue-300"
       true -> "text-slate-400"
     end
   end
 
   defp format_signal_type(type) do
-    type
-    |> String.replace("observer.", "")
-    |> String.replace(".", " ")
+    cond do
+      String.contains?(type, "insight.theme") -> "Story Analyst"
+      String.contains?(type, "insight.pattern") -> "Story Analyst"
+      String.contains?(type, "suggestion.probe") -> "Probe Coach"
+      String.contains?(type, "status.engagement") -> "Engagement Monitor"
+      String.contains?(type, "record.quote") -> "Scribe"
+      String.contains?(type, "record.summary") -> "Scribe"
+      String.contains?(type, "phase.entered") -> "Director"
+      String.contains?(type, "phase.completed") -> "Director"
+      true -> "System"
+    end
   end
 
   defp signal_preview(signal) do
+    type = signal.type
     data = signal.data
+
     cond do
-      Map.has_key?(data, :theme) -> "Theme: #{data.theme}"
-      Map.has_key?(data, :topic) -> "Topic: #{data.topic}"
-      Map.has_key?(data, :level) -> "Level: #{data.level}"
-      Map.has_key?(data, :quote) -> "\"#{String.slice(data.quote, 0, 40)}...\""
-      Map.has_key?(data, :pattern_type) -> "Pattern: #{data.pattern_type}"
-      Map.has_key?(data, :content) -> String.slice(to_string(data.content), 0, 50)
+      # Theme discovered
+      String.contains?(type, "insight.theme") ->
+        theme = Map.get(data, :theme, "something interesting")
+        "I'm noticing a theme around #{theme}"
+
+      # Pattern found
+      String.contains?(type, "insight.pattern") ->
+        pattern = Map.get(data, :pattern_type, "recurring element")
+        "Spotted a pattern: #{pattern}"
+
+      # Probe suggestion
+      String.contains?(type, "suggestion.probe") ->
+        topic = Map.get(data, :topic, "this")
+        priority = Map.get(data, :priority, :medium)
+        priority_text = if priority == :high, do: "We should definitely", else: "We could"
+        "#{priority_text} dig deeper on #{topic}"
+
+      # Engagement status
+      String.contains?(type, "status.engagement") ->
+        level = Map.get(data, :level, :medium)
+        case level do
+          :high -> "They're really engaged right now!"
+          :medium -> "Engagement looking good"
+          :low -> "Energy seems to be dropping..."
+          :critical -> "We might be losing them"
+          _ -> "Watching engagement levels"
+        end
+
+      # Notable quote
+      String.contains?(type, "record.quote") ->
+        quote = Map.get(data, :quote, "")
+        "Great quote: \"#{String.slice(quote, 0, 35)}...\""
+
+      # Phase summary
+      String.contains?(type, "record.summary") ->
+        "Wrapping up notes for this section"
+
+      # Phase entered
+      String.contains?(type, "phase.entered") ->
+        phase = Map.get(data, :phase_name, :unknown)
+        case phase do
+          :preparation -> "Getting everything ready..."
+          :opening -> "Starting the conversation"
+          :core_questions -> "Moving into the main questions"
+          :probing -> "Let's explore some things deeper"
+          :synthesis -> "Time to bring it all together"
+          :closing -> "Wrapping up the interview"
+          _ -> "Transitioning to #{phase}"
+        end
+
+      # Phase completed
+      String.contains?(type, "phase.completed") ->
+        phase = Map.get(data, :phase_name, :unknown)
+        "Finished #{format_phase_name(phase)}"
+
+      # Fallback
       true ->
-        # Filter out timestamps from preview to keep it clean
-        data
-        |> Map.drop([:timestamp])
-        |> inspect()
-        |> String.slice(0, 50)
+        "Processing..."
+    end
+  end
+
+  defp format_phase_name(phase) do
+    case phase do
+      :preparation -> "preparation"
+      :opening -> "the opening"
+      :core_questions -> "core questions"
+      :probing -> "deep dive"
+      :synthesis -> "synthesis"
+      :closing -> "closing"
+      _ -> to_string(phase)
     end
   end
 end
