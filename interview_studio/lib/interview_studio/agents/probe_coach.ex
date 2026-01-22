@@ -321,7 +321,7 @@ defmodule InterviewStudio.Agents.ProbeCoach do
       model = %Jido.AI.Model{
         provider: :openai,
         base_url: "https://api.groq.com/openai/v1",
-        model: config[:model] || "llama-3.3-70b-versatile",
+        model: config[:model] || "meta-llama/llama-4-scout-17b-16e-instruct",
         api_key: api_key,
         temperature: config[:temperature] || 0.4,
         max_tokens: config[:max_tokens] || 400
@@ -356,7 +356,7 @@ defmodule InterviewStudio.Agents.ProbeCoach do
   defp default_llm_config do
     %{
       provider: :openai,
-      model: "llama-3.3-70b-versatile",
+      model: "meta-llama/llama-4-scout-17b-16e-instruct",
       temperature: 0.4
     }
   end
