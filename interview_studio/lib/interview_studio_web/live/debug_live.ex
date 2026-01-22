@@ -254,7 +254,12 @@ defmodule InterviewStudioWeb.DebugLive do
   defp preview_data(data), do: inspect(data) |> String.slice(0, 80)
 
   defp format_time(%{data: %{timestamp: ts}}) when not is_nil(ts) do
-    Calendar.strftime(ts, "%H:%M:%S")
+    case ts do
+      %DateTime{} -> Calendar.strftime(ts, "%H:%M:%S")
+      _ -> "--:--:--"
+    end
+  rescue
+    _ -> "--:--:--"
   end
 
   defp format_time(_), do: "--:--:--"

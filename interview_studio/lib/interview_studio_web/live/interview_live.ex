@@ -335,7 +335,13 @@ defmodule InterviewStudioWeb.InterviewLive do
       Map.has_key?(data, :level) -> "Level: #{data.level}"
       Map.has_key?(data, :quote) -> "\"#{String.slice(data.quote, 0, 40)}...\""
       Map.has_key?(data, :pattern_type) -> "Pattern: #{data.pattern_type}"
-      true -> inspect(data) |> String.slice(0, 50)
+      Map.has_key?(data, :content) -> String.slice(to_string(data.content), 0, 50)
+      true ->
+        # Filter out timestamps from preview to keep it clean
+        data
+        |> Map.drop([:timestamp])
+        |> inspect()
+        |> String.slice(0, 50)
     end
   end
 end

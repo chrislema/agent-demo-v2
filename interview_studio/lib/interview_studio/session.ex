@@ -167,8 +167,9 @@ defmodule InterviewStudio.Session do
   defp handle_action(session_id, %{type: :transition, to_phase: phase, reason: reason}) do
     case InterviewFSM.transition(session_id, phase, reason) do
       {:ok, ^phase} ->
-        # Get the opening response if transitioning to opening
-        if phase == :opening do
+        # After transitioning, get the next action (question/probe/etc)
+        # This ensures we ask the first question after entering a new phase
+        if phase in [:opening, :core_questions, :probing, :synthesis, :closing] do
           action = Director.get_next_action(session_id)
           handle_action(session_id, action)
         else
