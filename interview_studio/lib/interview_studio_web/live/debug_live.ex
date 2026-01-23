@@ -169,27 +169,71 @@ defmodule InterviewStudioWeb.DebugLive do
   end
 
   # Phase 5: Track active agents for pulsing indicators
+  # Updated to recognize all agent signal types, not just analyzing/complete
   defp update_active_agents(signal, active) do
     now = System.system_time(:second)
 
     cond do
-      # Agent started analyzing
+      # Agent started analyzing (Story Analyst, Probe Coach)
       signal.type == "observer.status.analyzing" ->
-        Map.put(active, signal.source, %{status: :analyzing, since: now})
+        Map.put(active, signal.source, %{status: :analyzing, since: now, count: get_count(active, signal.source) + 1})
 
-      # Agent completed
+      # Agent completed (Story Analyst, Probe Coach)
       signal.type == "observer.status.complete" ->
-        Map.put(active, signal.source, %{status: :idle, since: now})
+        Map.put(active, signal.source, %{status: :idle, since: now, count: get_count(active, signal.source)})
 
       # Agent error
       signal.type == "observer.status.error" ->
-        Map.put(active, signal.source, %{status: :error, since: now})
+        Map.put(active, signal.source, %{status: :error, since: now, count: get_count(active, signal.source)})
+
+      # Engagement Monitor emitting engagement status
+      signal.type == "observer.status.engagement" ->
+        Map.put(active, "engagement_monitor", %{status: :active, since: now, count: get_count(active, "engagement_monitor") + 1, level: signal.data[:level]})
+
+      # Sentiment Agent emitting semantic analysis
+      signal.type == "observer.status.sentiment" ->
+        Map.put(active, "sentiment_agent", %{status: :active, since: now, count: get_count(active, "sentiment_agent") + 1, intent: signal.data[:user_intent]})
+
+      # Sentiment Agent emitting frustration signal (legacy)
+      signal.type == "observer.status.frustration" ->
+        existing = Map.get(active, "sentiment_agent", %{count: 0})
+        Map.put(active, "sentiment_agent", %{status: :active, since: now, count: existing.count + 1, level: signal.data[:level]})
+
+      # Timer Agent emitting timer status
+      signal.type == "observer.status.timer" ->
+        Map.put(active, "timer_agent", %{status: :active, since: now, count: get_count(active, "timer_agent") + 1, minutes: signal.data[:elapsed_minutes]})
+
+      # Director making decisions (track utterances it generates)
+      signal.type == "interview.utterance.host" ->
+        Map.put(active, "director", %{status: :active, since: now, count: get_count(active, "director") + 1})
+
+      # Director receiving user input
+      signal.type == "interview.utterance.user" ->
+        # Mark all observer agents as potentially active (they'll process this)
+        active
+        |> Map.put("story_analyst", %{status: :pending, since: now, count: get_count(active, "story_analyst")})
+        |> Map.put("probe_coach", %{status: :pending, since: now, count: get_count(active, "probe_coach")})
+        |> Map.put("engagement_monitor", %{status: :pending, since: now, count: get_count(active, "engagement_monitor")})
+        |> Map.put("sentiment_agent", %{status: :pending, since: now, count: get_count(active, "sentiment_agent")})
 
       true ->
-        # Clear stale entries (older than 10 seconds)
+        # Clear stale entries (older than 10 seconds) but preserve counts
         active
-        |> Enum.filter(fn {_k, v} -> now - v.since < 10 end)
+        |> Enum.map(fn {k, v} ->
+          if now - v.since < 10 do
+            {k, v}
+          else
+            {k, %{v | status: :idle}}
+          end
+        end)
         |> Enum.into(%{})
+    end
+  end
+
+  defp get_count(active, key) do
+    case Map.get(active, key) do
+      %{count: count} -> count
+      _ -> 0
     end
   end
 
@@ -646,19 +690,43 @@ defmodule InterviewStudioWeb.DebugLive do
   end
 
   # Phase 5: Agent status indicator helpers
+  # Color class mapping - static so Tailwind can scan them
+  # Tailwind safelist: bg-blue-500 bg-purple-500 bg-yellow-500 bg-red-500 bg-cyan-500 bg-pink-500 bg-green-500
+  @color_classes %{
+    "blue" => "bg-blue-500",
+    "purple" => "bg-purple-500",
+    "yellow" => "bg-yellow-500",
+    "red" => "bg-red-500",
+    "cyan" => "bg-cyan-500",
+    "pink" => "bg-pink-500",
+    "green" => "bg-green-500"
+  }
+
   defp agent_status_class(active_agents, agent_key, color) do
+    base_class = Map.get(@color_classes, color, "bg-slate-500")
+
     case Map.get(active_agents, agent_key) do
-      %{status: :analyzing} -> "bg-#{color}-500 animate-pulse"
+      %{status: :analyzing} -> "#{base_class} animate-pulse"
+      %{status: :active} -> "#{base_class} animate-pulse"
+      %{status: :pending} -> "#{base_class} animate-pulse opacity-75"
       %{status: :error} -> "bg-red-500"
-      _ -> "bg-#{color}-500 opacity-50"
+      %{status: :idle, count: count} when count > 0 -> base_class
+      _ -> "#{base_class} opacity-50"
     end
   end
 
   defp agent_status_text(active_agents, agent_key) do
     case Map.get(active_agents, agent_key) do
+      %{status: :analyzing, count: count} -> "analyzing... (#{count})"
       %{status: :analyzing} -> "analyzing..."
+      %{status: :active, count: count} -> "active (#{count})"
+      %{status: :active} -> "active"
+      %{status: :pending, count: count} when count > 0 -> "pending (#{count})"
+      %{status: :pending} -> "pending"
       %{status: :error} -> "error"
+      %{status: :idle, count: count} when count > 0 -> "idle (#{count})"
       %{status: :idle} -> "idle"
+      %{count: count} when count > 0 -> "ready (#{count})"
       _ -> "ready"
     end
   end
