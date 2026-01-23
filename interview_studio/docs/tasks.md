@@ -106,7 +106,7 @@ This file tracks implementation tasks for transforming the Interview Studio from
 ## Phase 3: Agent-to-Agent Communication
 
 ### 3.1 Direct Agent Messaging
-- [ ] **Task:** Add `target` field to signals for direct agent-to-agent messages
+- [x] **Task:** Add `target` field to signals for direct agent-to-agent messages
 - **Acceptance Criteria:**
   - Signals can specify `target: "agent_name"` for direct delivery
   - InterviewBus routes targeted signals only to specified agent
@@ -124,7 +124,7 @@ This file tracks implementation tasks for transforming the Interview Studio from
   ```
 
 ### 3.2 Story Analyst → Probe Coach Communication
-- [ ] **Task:** Story Analyst shares discovered themes with Probe Coach
+- [x] **Task:** Story Analyst shares discovered themes with Probe Coach
 - **Acceptance Criteria:**
   - When Story Analyst identifies a theme, it notifies Probe Coach
   - Probe Coach receives theme and generates relevant probe suggestions
@@ -138,7 +138,7 @@ This file tracks implementation tasks for transforming the Interview Studio from
   ```
 
 ### 3.3 Engagement Monitor Broadcast Influence
-- [ ] **Task:** Engagement Monitor can broadcast signals that influence all agents
+- [x] **Task:** Engagement Monitor can broadcast signals that influence all agents
 - **Acceptance Criteria:**
   - Critical engagement triggers broadcast to all agents
   - Agents adjust behavior based on engagement signals
@@ -155,7 +155,7 @@ This file tracks implementation tasks for transforming the Interview Studio from
   ```
 
 ### 3.4 Probe Coach → Director Priority Signals
-- [ ] **Task:** Probe Coach can mark probes as high-priority for immediate attention
+- [x] **Task:** Probe Coach can mark probes as high-priority for immediate attention
 - **Acceptance Criteria:**
   - Probes have priority levels: :low, :medium, :high, :urgent
   - Urgent probes interrupt normal question flow
@@ -378,7 +378,7 @@ This file tracks implementation tasks for transforming the Interview Studio from
 |-------|-------|----------|
 | 1. Parallel Analysis | 3 | 3/3 |
 | 2. Dynamic Questions | 3 | 3/3 |
-| 3. Agent Communication | 4 | 0/4 |
+| 3. Agent Communication | 4 | 4/4 |
 | 4. Consensus Mechanisms | 3 | 0/3 |
 | 5. UI Visibility | 4 | 0/4 |
 | 6. Validation & Testing | 4 | 0/4 |

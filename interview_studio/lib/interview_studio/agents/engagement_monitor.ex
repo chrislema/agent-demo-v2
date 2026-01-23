@@ -285,7 +285,43 @@ defmodule InterviewStudio.Agents.EngagementMonitor do
 
     InterviewBus.publish(signal)
     Logger.debug("[EngagementMonitor] Emitted status: #{state.level} (#{state.trend})")
+
+    # AGENT-TO-AGENT: Broadcast critical/low engagement to all agents
+    # This allows agents to adjust their behavior based on user energy
+    if state.level in [:critical, :low] do
+      broadcast_engagement_alert(state)
+    end
   end
+
+  # Broadcast engagement alerts to influence all agents
+  defp broadcast_engagement_alert(state) do
+    alert = %Jido.Signal{
+      type: "engagement.alert.broadcast",
+      source: "engagement_monitor",
+      id: Jido.Util.generate_id(),
+      data: %{
+        level: state.level,
+        trend: state.trend,
+        action_required: state.level == :critical,
+        message: engagement_alert_message(state.level, state.trend),
+        timestamp: DateTime.utc_now()
+      }
+    }
+
+    InterviewBus.publish(alert)
+    Logger.info("[EngagementMonitor] BROADCAST: Engagement alert - #{state.level}")
+  end
+
+  defp engagement_alert_message(:critical, _) do
+    "CRITICAL: User wants to wrap up. All agents should facilitate closing."
+  end
+  defp engagement_alert_message(:low, :declining) do
+    "LOW & DECLINING: User energy dropping. Reduce complexity, pause deep analysis."
+  end
+  defp engagement_alert_message(:low, _) do
+    "LOW: User energy is low. Keep interactions light."
+  end
+  defp engagement_alert_message(_, _), do: "Monitor engagement."
 
   defp subscribe_to_signals do
     InterviewBus.subscribe("interview.utterance.user")

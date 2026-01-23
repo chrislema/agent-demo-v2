@@ -21,6 +21,8 @@ defmodule InterviewStudio.Agents.ProbeCoach do
     :pending_probes,
     :used_probes,
     :last_user_message,
+    :received_themes,      # Themes received from Story Analyst
+    :engagement_level,     # Current engagement from Engagement Monitor
     :llm_config
   ]
 
@@ -60,6 +62,8 @@ defmodule InterviewStudio.Agents.ProbeCoach do
       pending_probes: [],
       used_probes: [],
       last_user_message: nil,
+      received_themes: [],
+      engagement_level: :high,
       llm_config: llm_config
     }
 
@@ -142,7 +146,95 @@ defmodule InterviewStudio.Agents.ProbeCoach do
     new_state
   end
 
+  # AGENT-TO-AGENT: Receive theme notifications from Story Analyst
+  defp handle_signal(%{type: "analyst.theme.discovered"} = signal, state) do
+    theme = signal.data.theme
+    evidence = signal.data[:evidence] || ""
+    confidence = signal.data[:confidence] || 0.7
+
+    Logger.debug("[ProbeCoach] <- [StoryAnalyst] Received theme: #{theme}")
+
+    # Store the theme
+    theme_entry = %{theme: theme, evidence: evidence, confidence: confidence}
+    updated_themes = [theme_entry | state.received_themes] |> Enum.take(10)
+    new_state = %{state | received_themes: updated_themes}
+
+    # Generate a theme-aware probe if engagement is good
+    if state.engagement_level in [:high, :medium] do
+      generate_theme_probe_async(theme_entry, new_state)
+    end
+
+    new_state
+  end
+
+  # AGENT-TO-AGENT: Receive engagement updates from Engagement Monitor
+  defp handle_signal(%{type: "observer.status.engagement"} = signal, state) do
+    level = signal.data.level
+    Logger.debug("[ProbeCoach] <- [EngagementMonitor] Engagement: #{level}")
+
+    # If engagement is critical, clear low-priority probes
+    new_probes = if level == :critical do
+      Logger.debug("[ProbeCoach] Critical engagement - clearing non-urgent probes")
+      Enum.filter(state.pending_probes, fn p -> p.priority in [:high, :urgent] end)
+    else
+      state.pending_probes
+    end
+
+    %{state | engagement_level: level, pending_probes: new_probes}
+  end
+
   defp handle_signal(_signal, state), do: state
+
+  # Generate a probe specifically about a discovered theme
+  defp generate_theme_probe_async(theme_entry, state) do
+    Task.start(fn ->
+      case generate_theme_probe(theme_entry, state) do
+        {:ok, probe} when probe != nil ->
+          emit_probes([probe], state)
+          Logger.debug("[ProbeCoach] Generated theme-aware probe for: #{theme_entry.theme}")
+        _ ->
+          :ok
+      end
+    end)
+  end
+
+  defp generate_theme_probe(theme_entry, state) do
+    prompt = """
+    A theme has been identified in an interview: "#{theme_entry.theme}"
+    Evidence: #{theme_entry.evidence}
+
+    Generate ONE follow-up question that explores this theme more deeply.
+    The question should:
+    1. Connect to the theme naturally
+    2. Invite the person to share more about how this theme shows up in their life
+    3. Be specific, not generic
+
+    Respond in JSON:
+    {
+      "topic": "theme exploration: #{theme_entry.theme}",
+      "rationale": "why this theme deserves deeper exploration",
+      "question": "the follow-up question",
+      "priority": "medium"
+    }
+    """
+
+    case call_llm(prompt, state.llm_config) do
+      {:ok, response} ->
+        case extract_json(response) do
+          {:ok, parsed} ->
+            probe = %{
+              topic: parsed["topic"] || "theme: #{theme_entry.theme}",
+              rationale: "Theme-aware probe from Story Analyst: #{parsed["rationale"] || theme_entry.theme}",
+              suggested_question: parsed["question"],
+              priority: :medium,
+              source: :story_analyst_theme
+            }
+            {:ok, probe}
+          _ -> {:ok, nil}
+        end
+      {:error, _} -> {:ok, nil}
+    end
+  end
 
   # Quick heuristic check before calling LLM
 
@@ -398,6 +490,12 @@ defmodule InterviewStudio.Agents.ProbeCoach do
 
   defp subscribe_to_signals do
     InterviewBus.subscribe("interview.utterance.user")
+    # AGENT-TO-AGENT: Subscribe to direct messages from other agents
+    InterviewBus.subscribe_direct("probe_coach")
+    # Subscribe to theme discoveries from Story Analyst
+    InterviewBus.subscribe("analyst.theme.discovered")
+    # Subscribe to engagement updates from Engagement Monitor
+    InterviewBus.subscribe("observer.status.engagement")
   end
 
   defp via_tuple(session_id) do

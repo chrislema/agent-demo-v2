@@ -22,6 +22,7 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
     :patterns,
     :conversation_buffer,
     :analysis_count,
+    :engagement_level,     # Current engagement from Engagement Monitor
     :llm_config
   ]
 
@@ -64,6 +65,7 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
       patterns: [],
       conversation_buffer: [],
       analysis_count: 0,
+      engagement_level: :high,
       llm_config: llm_config
     }
 
@@ -138,16 +140,38 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
     new_state = %{state | conversation_buffer: buffer, analysis_count: new_count}
 
     # Trigger analysis periodically, or on first substantive user message
-    should_analyze = role == :user and (
-      rem(new_count, @analysis_threshold) == 0 or
-      (new_count == 1 and String.length(content) > 50)
-    )
+    # BUT respect engagement level - don't do deep analysis when user is disengaged
+    should_analyze = role == :user and
+      state.engagement_level not in [:critical] and
+      (rem(new_count, @analysis_threshold) == 0 or
+       (new_count == 1 and String.length(content) > 50))
 
     if should_analyze do
       analyze_async(new_state)
     end
 
     new_state
+  end
+
+  # AGENT-TO-AGENT: Receive engagement alerts from Engagement Monitor
+  defp handle_signal(%{type: "engagement.alert.broadcast"} = signal, state) do
+    level = signal.data.level
+    Logger.debug("[StoryAnalyst] <- [EngagementMonitor] Engagement alert: #{level}")
+
+    new_state = %{state | engagement_level: level}
+
+    # If engagement is critical, log that we're pausing deep analysis
+    if level == :critical do
+      Logger.info("[StoryAnalyst] Pausing deep analysis due to critical engagement")
+    end
+
+    new_state
+  end
+
+  # Also handle regular engagement status updates
+  defp handle_signal(%{type: "observer.status.engagement"} = signal, state) do
+    level = signal.data.level
+    %{state | engagement_level: level}
   end
 
   defp handle_signal(_signal, state), do: state
@@ -283,7 +307,7 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
   end
 
   defp emit_insights(themes, patterns, state) do
-    # Emit theme signals
+    # Emit theme signals (broadcast for UI/debug)
     Enum.each(themes, fn theme ->
       signal = %Jido.Signal{
         type: "observer.insight.theme",
@@ -298,6 +322,10 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
       }
       InterviewBus.publish(signal)
       Logger.debug("[StoryAnalyst] Identified theme: #{theme.theme}")
+
+      # AGENT-TO-AGENT: Send theme directly to Probe Coach
+      # This enables the Probe Coach to generate theme-aware probes
+      notify_probe_coach(theme, state)
     end)
 
     # Emit pattern signals
@@ -376,8 +404,32 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
     end
   end
 
+  # AGENT-TO-AGENT COMMUNICATION
+  # Send discovered themes directly to Probe Coach so it can generate
+  # theme-aware probe suggestions (not just utterance-based)
+  defp notify_probe_coach(theme, _state) do
+    signal = %Jido.Signal{
+      type: "analyst.theme.discovered",
+      source: "story_analyst",
+      id: Jido.Util.generate_id(),
+      data: %{
+        target: "probe_coach",  # Direct message to Probe Coach
+        theme: theme.theme,
+        evidence: theme.evidence,
+        confidence: theme.confidence,
+        timestamp: DateTime.utc_now(),
+        suggestion: "Consider probing how this theme connects to other areas of their story"
+      }
+    }
+    InterviewBus.publish(signal)
+    Logger.debug("[StoryAnalyst] -> [ProbeCoach] Theme notification: #{theme.theme}")
+  end
+
   defp subscribe_to_signals do
     InterviewBus.subscribe("interview.utterance.**")
+    # AGENT-TO-AGENT: Subscribe to engagement alerts from Engagement Monitor
+    InterviewBus.subscribe("engagement.alert.broadcast")
+    InterviewBus.subscribe("observer.status.engagement")
   end
 
   defp via_tuple(session_id) do

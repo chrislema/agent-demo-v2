@@ -33,10 +33,21 @@ defmodule InterviewStudio.InterviewBus do
   - "interview.utterance.*" - all utterances
   - "observer.**" - all observer signals
   - "interview.phase.entered" - specific signal type
+
+  For direct agent-to-agent messaging, agents can also subscribe with their name:
+  - subscribe("direct.probe_coach") - receive signals targeted at probe_coach
   """
   def subscribe(pattern, opts \\ []) do
     bus = Keyword.get(opts, :bus, __MODULE__)
     GenServer.call(bus, {:subscribe, pattern, self()})
+  end
+
+  @doc """
+  Subscribe to direct messages for a specific agent.
+  This is a convenience wrapper for subscribing to targeted signals.
+  """
+  def subscribe_direct(agent_name, opts \\ []) do
+    subscribe("direct.#{agent_name}", opts)
   end
 
   @doc """
@@ -78,15 +89,36 @@ defmodule InterviewStudio.InterviewBus do
 
   @impl true
   def handle_cast({:publish, signal}, state) do
-    Logger.debug("[InterviewBus] Publishing signal: #{signal.type}")
+    # Check if this is a targeted (direct) signal
+    target = get_signal_target(signal)
+
+    if target do
+      Logger.debug("[InterviewBus] Publishing DIRECT signal: #{signal.type} -> #{target}")
+    else
+      Logger.debug("[InterviewBus] Publishing BROADCAST signal: #{signal.type}")
+    end
 
     # Record in history
     entry = {signal, DateTime.utc_now()}
     history = [entry | state.history] |> Enum.take(state.history_limit)
 
+    # Determine which patterns to match
+    patterns_to_match = if target do
+      # For targeted signals, match both:
+      # 1. The normal type pattern (for debug/monitoring)
+      # 2. The direct.{agent_name} pattern (for the target agent)
+      fn {pattern, _pids} ->
+        matches_pattern?(signal.type, pattern) or
+        matches_pattern?("direct.#{target}", pattern)
+      end
+    else
+      # Broadcast: match only type pattern
+      fn {pattern, _pids} -> matches_pattern?(signal.type, pattern) end
+    end
+
     # Fan out to matching subscribers
     state.subscriptions
-    |> Enum.filter(fn {pattern, _pids} -> matches_pattern?(signal.type, pattern) end)
+    |> Enum.filter(patterns_to_match)
     |> Enum.flat_map(fn {_pattern, pids} -> pids end)
     |> Enum.uniq()
     |> Enum.each(fn pid ->
@@ -95,6 +127,11 @@ defmodule InterviewStudio.InterviewBus do
 
     {:noreply, %{state | history: history}}
   end
+
+  # Extract target from signal (supports both data.target and extensions.target)
+  defp get_signal_target(%{data: %{target: target}}) when is_binary(target), do: target
+  defp get_signal_target(%{extensions: %{target: target}}) when is_binary(target), do: target
+  defp get_signal_target(_), do: nil
 
   @impl true
   def handle_call({:subscribe, pattern, pid}, _from, state) do
