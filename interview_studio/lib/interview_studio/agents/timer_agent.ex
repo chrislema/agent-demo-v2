@@ -4,7 +4,7 @@ defmodule InterviewStudio.Agents.TimerAgent do
 
   Responsibilities:
   - Track how long the interview has been running
-  - Emit signals at key milestones (5, 10, 15, 20 minutes)
+  - Emit signals at key milestones (configurable via priv/config/timer.yaml)
   - Provide context for pacing decisions
   - Suggest wrap-up when interview gets lengthy
   """
@@ -13,9 +13,22 @@ defmodule InterviewStudio.Agents.TimerAgent do
   require Logger
 
   alias InterviewStudio.InterviewBus
+  alias InterviewStudio.ConfigLoader
 
-  @tick_interval 60_000  # Check every minute
-  @milestones [5, 10]    # Key decision points
+  # Default config (used if YAML file not found)
+  @default_config %{
+    milestones: [5, 10],
+    tick_interval_ms: 60_000,
+    wrap_up: %{
+      time_threshold_minutes: 10,
+      frustration_threshold_minutes: 5
+    },
+    recommendations: %{
+      milestone_5: "Pay attention to time",
+      milestone_10: "We should likely wrap up",
+      wrap_up: "User shows frustration - consider wrapping up"
+    }
+  }
 
   defstruct [
     :session_id,
@@ -25,7 +38,8 @@ defmodule InterviewStudio.Agents.TimerAgent do
     :current_phase,          # Track current phase for timing recommendations
     :phase_started_at,       # When current phase started
     :frustration_level,      # From Sentiment Agent - affects wrap-up recommendations
-    :frustration_wrap_up_emitted  # Track if we've already suggested wrap-up due to frustration
+    :frustration_wrap_up_emitted,  # Track if we've already suggested wrap-up due to frustration
+    :config                  # Loaded configuration
   ]
 
   # Client API
@@ -58,6 +72,10 @@ defmodule InterviewStudio.Agents.TimerAgent do
     session_id = Keyword.fetch!(opts, :session_id)
     now = DateTime.utc_now()
 
+    # Load config from YAML, falling back to defaults
+    config = ConfigLoader.load_with_defaults(:timer, @default_config)
+    tick_interval = config[:tick_interval_ms] || 60_000
+
     state = %__MODULE__{
       session_id: session_id,
       started_at: now,
@@ -66,7 +84,8 @@ defmodule InterviewStudio.Agents.TimerAgent do
       current_phase: :opening,
       phase_started_at: now,
       frustration_level: :none,
-      frustration_wrap_up_emitted: false
+      frustration_wrap_up_emitted: false,
+      config: config
     }
 
     # CROSS-AGENT: Subscribe to phase changes for timing context
@@ -75,9 +94,9 @@ defmodule InterviewStudio.Agents.TimerAgent do
     InterviewBus.subscribe("observer.status.frustration")
 
     # Start the timer tick
-    timer_ref = Process.send_after(self(), :tick, @tick_interval)
+    timer_ref = Process.send_after(self(), :tick, tick_interval)
 
-    Logger.info("[TimerAgent] Started for session #{session_id}")
+    Logger.info("[TimerAgent] Started for session #{session_id} with config: milestones=#{inspect(config[:milestones])}")
     {:ok, %{state | timer_ref: timer_ref}}
   end
 
@@ -95,19 +114,22 @@ defmodule InterviewStudio.Agents.TimerAgent do
   @impl true
   def handle_call({:vote_transition, target_phase}, _from, state) do
     elapsed = elapsed_minutes(state.started_at)
+    wrap_up_config = state.config[:wrap_up] || %{}
+    time_threshold = wrap_up_config[:time_threshold_minutes] || 10
+    frustration_threshold = wrap_up_config[:frustration_threshold_minutes] || 5
 
     vote = case target_phase do
       :closing ->
-        # After 10 minutes, we're supportive of wrapping up
-        if elapsed >= 10 do
+        # After time_threshold minutes, we're supportive of wrapping up
+        if elapsed >= time_threshold do
           {:ready, "Interview has been running for #{round(elapsed)} minutes - time to wrap up"}
         else
           {:abstain, "No timing concerns"}
         end
 
       :synthesis ->
-        # After 5 minutes, synthesis is acceptable
-        if elapsed >= 5 do
+        # After frustration_threshold minutes, synthesis is acceptable
+        if elapsed >= frustration_threshold do
           {:ready, "Good time for synthesis after #{round(elapsed)} minutes"}
         else
           {:abstain, "No timing concerns"}
@@ -123,15 +145,17 @@ defmodule InterviewStudio.Agents.TimerAgent do
   @impl true
   def handle_info(:tick, state) do
     elapsed = elapsed_minutes(state.started_at)
+    milestones = state.config[:milestones] || [5, 10]
+    tick_interval = state.config[:tick_interval_ms] || 60_000
 
     # Check for new milestones
-    new_milestones = Enum.filter(@milestones, fn m ->
+    new_milestones = Enum.filter(milestones, fn m ->
       elapsed >= m and m not in state.milestones_hit
     end)
 
     # Emit signals for new milestones
     Enum.each(new_milestones, fn milestone ->
-      emit_timer_signal(milestone, elapsed, state.session_id)
+      emit_timer_signal(milestone, elapsed, state)
     end)
 
     # Update state with new milestones
@@ -141,7 +165,7 @@ defmodule InterviewStudio.Agents.TimerAgent do
     new_state = check_frustration_wrap_up(elapsed, new_state)
 
     # Schedule next tick
-    timer_ref = Process.send_after(self(), :tick, @tick_interval)
+    timer_ref = Process.send_after(self(), :tick, tick_interval)
 
     {:noreply, %{new_state | timer_ref: timer_ref}}
   end
@@ -172,11 +196,14 @@ defmodule InterviewStudio.Agents.TimerAgent do
     Logger.debug("[TimerAgent] <- [SentimentAgent] Frustration: #{level}")
     elapsed = elapsed_minutes(state.started_at)
 
+    wrap_up_config = state.config[:wrap_up] || %{}
+    frustration_threshold = wrap_up_config[:frustration_threshold_minutes] || 5
+
     new_state = %{state | frustration_level: level}
 
-    # If frustration is moderate+ and we're past 5 minutes, suggest wrap-up
-    new_state = if level in [:moderate, :high] and elapsed >= 5 and not state.frustration_wrap_up_emitted do
-      emit_wrap_up_signal(elapsed, level, state.session_id)
+    # If frustration is moderate+ and we're past threshold, suggest wrap-up
+    new_state = if level in [:moderate, :high] and elapsed >= frustration_threshold and not state.frustration_wrap_up_emitted do
+      emit_wrap_up_signal(elapsed, level, state)
       %{new_state | frustration_wrap_up_emitted: true}
     else
       new_state
@@ -201,12 +228,10 @@ defmodule InterviewStudio.Agents.TimerAgent do
     |> Float.round(1)
   end
 
-  defp emit_timer_signal(milestone, elapsed, _session_id) do
-    recommendation = case milestone do
-      10 -> "We should likely wrap up"
-      5 -> "Pay attention to time"
-      _ -> "Interview progressing"
-    end
+  defp emit_timer_signal(milestone, elapsed, state) do
+    recommendations = state.config[:recommendations] || %{}
+    milestone_key = String.to_atom("milestone_#{milestone}")
+    recommendation = recommendations[milestone_key] || "Interview progressing"
 
     signal = %Jido.Signal{
       type: "observer.status.timer",
@@ -225,7 +250,10 @@ defmodule InterviewStudio.Agents.TimerAgent do
   end
 
   # CROSS-AGENT: Emit wrap-up signal when user is frustrated and we have enough time elapsed
-  defp emit_wrap_up_signal(elapsed, frustration_level, _session_id) do
+  defp emit_wrap_up_signal(elapsed, frustration_level, state) do
+    recommendations = state.config[:recommendations] || %{}
+    wrap_up_recommendation = recommendations[:wrap_up] || "User shows frustration - consider wrapping up"
+
     signal = %Jido.Signal{
       type: "observer.suggestion.wrap_up",
       source: "timer_agent",
@@ -234,7 +262,7 @@ defmodule InterviewStudio.Agents.TimerAgent do
         elapsed_minutes: elapsed,
         reason: :frustration_detected,
         frustration_level: frustration_level,
-        recommendation: "User shows frustration after #{round(elapsed)} minutes - consider wrapping up",
+        recommendation: "#{wrap_up_recommendation} (#{round(elapsed)} minutes elapsed)",
         timestamp: DateTime.utc_now()
       }
     }
@@ -245,10 +273,13 @@ defmodule InterviewStudio.Agents.TimerAgent do
 
   # Check during tick if we should emit frustration-based wrap-up
   defp check_frustration_wrap_up(elapsed, state) do
+    wrap_up_config = state.config[:wrap_up] || %{}
+    frustration_threshold = wrap_up_config[:frustration_threshold_minutes] || 5
+
     if state.frustration_level in [:moderate, :high] and
-       elapsed >= 5 and
+       elapsed >= frustration_threshold and
        not state.frustration_wrap_up_emitted do
-      emit_wrap_up_signal(elapsed, state.frustration_level, state.session_id)
+      emit_wrap_up_signal(elapsed, state.frustration_level, state)
       %{state | frustration_wrap_up_emitted: true}
     else
       state

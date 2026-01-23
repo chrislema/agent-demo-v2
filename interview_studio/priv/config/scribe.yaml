@@ -1,0 +1,43 @@
+# Scribe Agent Configuration
+# Controls quote detection and key phrase identification
+
+quote_detection:
+  min_length: 200  # Minimum characters for a substantive quote
+
+  # Words indicating emotional content
+  emotional_words:
+    - love
+    - hate
+    - afraid
+    - excited
+    - passionate
+    - thrilled
+    - terrified
+    - amazed
+    - frustrated
+    - proud
+    - disappointed
+    - grateful
+    - anxious
+
+  # Phrases indicating self-reflection
+  reflection_phrases:
+    - "i realized"
+    - "i learned"
+    - "i discovered"
+    - "it hit me"
+    - "i understood"
+    - "i figured out"
+    - "that's when i knew"
+    - "looking back"
+
+  # Phrases indicating key insights
+  key_phrases:
+    - "the most important"
+    - "my purpose"
+    - "what drives me"
+    - "turning point"
+    - "changed everything"
+    - "what makes me unique"
+    - "my biggest"
+    - "the reason i"

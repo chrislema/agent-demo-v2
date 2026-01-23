@@ -15,6 +15,62 @@ defmodule InterviewStudio.Agents.EngagementMonitor do
   require Logger
 
   alias InterviewStudio.InterviewBus
+  alias InterviewStudio.ConfigLoader
+
+  # Default config (used if YAML file not found)
+  @default_config %{
+    wrap_up_markers: [
+      "wrap up", "let's wrap", "wrapping up", "finish", "let's finish",
+      "move on", "let's move on", "already explained", "already said",
+      "end the interview", "that's enough", "i'm done", "let's end",
+      "can we finish", "ready to finish", "time to wrap"
+    ],
+    enthusiasm_markers: ["!", "love", "excited", "amazing", "great", "absolutely", "definitely", "really"],
+    resistance_markers: ["i don't know", "not sure", "maybe", "i guess", "whatever", "fine", "ok", "sure"],
+    elaboration_markers: ["for example", "like when", "i remember", "one time", "because", "the reason", "actually"],
+    sentiment: %{
+      positive_words: ~w(love great amazing wonderful happy excited good best),
+      negative_words: ~w(hate bad terrible awful frustrated annoyed difficult hard)
+    },
+    scoring: %{
+      terse_response: -2,
+      verbose_response: 1,
+      medium_response: 1,
+      short_response: -1,
+      enthusiasm_detected: 1,
+      resistance_detected: -2,
+      elaboration: 1,
+      positive_sentiment: 1,
+      negative_sentiment: -1
+    },
+    thresholds: %{
+      terse_max: 5,
+      short_max: 10,
+      medium_min: 20,
+      verbose_min: 100,
+      resistance_min_count: 2,
+      resistance_short_length: 30
+    },
+    level_thresholds: %{
+      high: 2,
+      medium: 0,
+      low: -2
+    },
+    recommendations: %{
+      critical: "Consider wrapping up or changing topic",
+      low_declining: "Try a different approach or easier question",
+      low: "Keep questions light and build rapport",
+      medium_declining: "Engagement dropping, consider a more engaging topic",
+      high: "Good engagement, continue current approach",
+      default: "Monitor and adjust as needed"
+    },
+    alerts: %{
+      critical: "CRITICAL: User wants to wrap up. All agents should facilitate closing.",
+      low_declining: "LOW & DECLINING: User energy dropping. Reduce complexity, pause deep analysis.",
+      low: "LOW: User energy is low. Keep interactions light.",
+      default: "Monitor engagement."
+    }
+  }
 
   defstruct [
     :session_id,
@@ -22,7 +78,8 @@ defmodule InterviewStudio.Agents.EngagementMonitor do
     :trend,
     :history,
     :indicators,
-    :last_emission
+    :last_emission,
+    :config
   ]
 
   # Client API
@@ -56,13 +113,17 @@ defmodule InterviewStudio.Agents.EngagementMonitor do
   def init(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
 
+    # Load config from YAML, falling back to defaults
+    config = ConfigLoader.load_with_defaults(:engagement, @default_config)
+
     state = %__MODULE__{
       session_id: session_id,
       level: :high,
       trend: :stable,
       history: [],
       indicators: %{},
-      last_emission: nil
+      last_emission: nil,
+      config: config
     }
 
     subscribe_to_signals()
@@ -101,10 +162,10 @@ defmodule InterviewStudio.Agents.EngagementMonitor do
   defp handle_signal(%{type: "interview.utterance.user"} = signal, state) do
     content = signal.data.content
 
-    # Analyze the response
-    indicators = analyze_response(content)
+    # Analyze the response using config
+    indicators = analyze_response(content, state.config)
 
-    # Calculate new level
+    # Calculate new level using config
     {new_level, new_trend} = calculate_engagement(indicators, state)
 
     # Record in history
@@ -129,40 +190,48 @@ defmodule InterviewStudio.Agents.EngagementMonitor do
 
   # Analysis functions
 
-  defp analyze_response(content) do
+  defp analyze_response(content, config) do
     word_count = content |> String.split() |> length()
     char_count = String.length(content)
+    thresholds = config[:thresholds] || %{}
+
+    terse_max = thresholds[:terse_max] || 5
+    verbose_min = thresholds[:verbose_min] || 100
 
     %{
       word_count: word_count,
       char_count: char_count,
-      has_enthusiasm: has_enthusiasm?(content),
-      has_resistance: has_resistance?(content),
-      has_elaboration: has_elaboration?(content),
-      wants_wrap_up: wants_to_wrap_up?(content),
-      is_terse: word_count < 5,
-      is_verbose: word_count > 100,
-      sentiment: estimate_sentiment(content)
+      has_enthusiasm: has_enthusiasm?(content, config),
+      has_resistance: has_resistance?(content, config),
+      has_elaboration: has_elaboration?(content, config),
+      wants_wrap_up: wants_to_wrap_up?(content, config),
+      is_terse: word_count < terse_max,
+      is_verbose: word_count > verbose_min,
+      sentiment: estimate_sentiment(content, config)
     }
   end
 
-  defp has_enthusiasm?(text) do
-    enthusiasm_markers = ["!", "love", "excited", "amazing", "great", "absolutely", "definitely", "really"]
+  defp has_enthusiasm?(text, config) do
+    enthusiasm_markers = config[:enthusiasm_markers] || ["!", "love", "excited", "amazing", "great", "absolutely", "definitely", "really"]
     downcased = String.downcase(text)
     Enum.any?(enthusiasm_markers, fn marker -> String.contains?(downcased, marker) end)
   end
 
-  defp has_resistance?(text) do
-    resistance_markers = ["i don't know", "not sure", "maybe", "i guess", "whatever", "fine", "ok", "sure"]
+  defp has_resistance?(text, config) do
+    resistance_markers = config[:resistance_markers] || ["i don't know", "not sure", "maybe", "i guess", "whatever", "fine", "ok", "sure"]
+    thresholds = config[:thresholds] || %{}
+    min_count = thresholds[:resistance_min_count] || 2
+    short_length = thresholds[:resistance_short_length] || 30
+
     downcased = String.downcase(text)
     # Count how many resistance markers appear
     count = Enum.count(resistance_markers, fn marker -> String.contains?(downcased, marker) end)
     # Only flag if multiple markers or response is short
-    count >= 2 or (count >= 1 and String.length(text) < 30)
+    count >= min_count or (count >= 1 and String.length(text) < short_length)
   end
 
-  defp wants_to_wrap_up?(text) do
-    wrap_up_markers = [
+  defp wants_to_wrap_up?(text, config) do
+    wrap_up_markers = config[:wrap_up_markers] || [
       "wrap up", "let's wrap", "wrapping up", "finish", "let's finish",
       "move on", "let's move on", "already explained", "already said",
       "end the interview", "that's enough", "i'm done", "let's end",
@@ -172,16 +241,17 @@ defmodule InterviewStudio.Agents.EngagementMonitor do
     Enum.any?(wrap_up_markers, fn marker -> String.contains?(downcased, marker) end)
   end
 
-  defp has_elaboration?(text) do
+  defp has_elaboration?(text, config) do
     # Signs of elaboration: examples, stories, details
-    elaboration_markers = ["for example", "like when", "i remember", "one time", "because", "the reason", "actually"]
+    elaboration_markers = config[:elaboration_markers] || ["for example", "like when", "i remember", "one time", "because", "the reason", "actually"]
     downcased = String.downcase(text)
     Enum.any?(elaboration_markers, fn marker -> String.contains?(downcased, marker) end)
   end
 
-  defp estimate_sentiment(text) do
-    positive_words = ~w(love great amazing wonderful happy excited good best)
-    negative_words = ~w(hate bad terrible awful frustrated annoyed difficult hard)
+  defp estimate_sentiment(text, config) do
+    sentiment_config = config[:sentiment] || %{}
+    positive_words = sentiment_config[:positive_words] || ~w(love great amazing wonderful happy excited good best)
+    negative_words = sentiment_config[:negative_words] || ~w(hate bad terrible awful frustrated annoyed difficult hard)
 
     downcased = String.downcase(text)
 
@@ -203,32 +273,43 @@ defmodule InterviewStudio.Agents.EngagementMonitor do
       new_trend = calculate_trend(:critical, state.history)
       {:critical, new_trend}
     else
-      # Score components
+      scoring = state.config[:scoring] || %{}
+      thresholds = state.config[:thresholds] || %{}
+      level_thresholds = state.config[:level_thresholds] || %{}
+
+      medium_min = thresholds[:medium_min] || 20
+      short_max = thresholds[:short_max] || 10
+
+      # Score components from config
       length_score = cond do
-        indicators.is_terse -> -2
-        indicators.is_verbose -> 1
-        indicators.word_count > 20 -> 1
-        indicators.word_count > 10 -> 0
-        true -> -1
+        indicators.is_terse -> scoring[:terse_response] || -2
+        indicators.is_verbose -> scoring[:verbose_response] || 1
+        indicators.word_count > medium_min -> scoring[:medium_response] || 1
+        indicators.word_count > short_max -> 0
+        true -> scoring[:short_response] || -1
       end
 
-      enthusiasm_score = if indicators.has_enthusiasm, do: 1, else: 0
-      resistance_score = if indicators.has_resistance, do: -2, else: 0
-      elaboration_score = if indicators.has_elaboration, do: 1, else: 0
+      enthusiasm_score = if indicators.has_enthusiasm, do: scoring[:enthusiasm_detected] || 1, else: 0
+      resistance_score = if indicators.has_resistance, do: scoring[:resistance_detected] || -2, else: 0
+      elaboration_score = if indicators.has_elaboration, do: scoring[:elaboration] || 1, else: 0
 
       sentiment_score = case indicators.sentiment do
-        :positive -> 1
-        :negative -> -1
+        :positive -> scoring[:positive_sentiment] || 1
+        :negative -> scoring[:negative_sentiment] || -1
         :neutral -> 0
       end
 
       total_score = length_score + enthusiasm_score + resistance_score + elaboration_score + sentiment_score
 
-      # Map to level
+      # Map to level using config thresholds
+      high_threshold = level_thresholds[:high] || 2
+      medium_threshold = level_thresholds[:medium] || 0
+      low_threshold = level_thresholds[:low] || -2
+
       new_level = cond do
-        total_score >= 2 -> :high
-        total_score >= 0 -> :medium
-        total_score >= -2 -> :low
+        total_score >= high_threshold -> :high
+        total_score >= medium_threshold -> :medium
+        total_score >= low_threshold -> :low
         true -> :critical
       end
 
@@ -280,13 +361,15 @@ defmodule InterviewStudio.Agents.EngagementMonitor do
   end
 
   defp emit_status(state) do
+    recommendations = state.config[:recommendations] || %{}
+
     recommendation = case {state.level, state.trend} do
-      {:critical, _} -> "Consider wrapping up or changing topic"
-      {:low, :declining} -> "Try a different approach or easier question"
-      {:low, _} -> "Keep questions light and build rapport"
-      {:medium, :declining} -> "Engagement dropping, consider a more engaging topic"
-      {:high, _} -> "Good engagement, continue current approach"
-      _ -> "Monitor and adjust as needed"
+      {:critical, _} -> recommendations[:critical] || "Consider wrapping up or changing topic"
+      {:low, :declining} -> recommendations[:low_declining] || "Try a different approach or easier question"
+      {:low, _} -> recommendations[:low] || "Keep questions light and build rapport"
+      {:medium, :declining} -> recommendations[:medium_declining] || "Engagement dropping, consider a more engaging topic"
+      {:high, _} -> recommendations[:high] || "Good engagement, continue current approach"
+      _ -> recommendations[:default] || "Monitor and adjust as needed"
     end
 
     signal = %Jido.Signal{
@@ -314,6 +397,8 @@ defmodule InterviewStudio.Agents.EngagementMonitor do
 
   # Broadcast engagement alerts to influence all agents
   defp broadcast_engagement_alert(state) do
+    alerts = state.config[:alerts] || %{}
+
     alert = %Jido.Signal{
       type: "engagement.alert.broadcast",
       source: "engagement_monitor",
@@ -322,7 +407,7 @@ defmodule InterviewStudio.Agents.EngagementMonitor do
         level: state.level,
         trend: state.trend,
         action_required: state.level == :critical,
-        message: engagement_alert_message(state.level, state.trend),
+        message: engagement_alert_message(state.level, state.trend, alerts),
         timestamp: DateTime.utc_now()
       }
     }
@@ -331,16 +416,18 @@ defmodule InterviewStudio.Agents.EngagementMonitor do
     Logger.info("[EngagementMonitor] BROADCAST: Engagement alert - #{state.level}")
   end
 
-  defp engagement_alert_message(:critical, _) do
-    "CRITICAL: User wants to wrap up. All agents should facilitate closing."
+  defp engagement_alert_message(:critical, _, alerts) do
+    alerts[:critical] || "CRITICAL: User wants to wrap up. All agents should facilitate closing."
   end
-  defp engagement_alert_message(:low, :declining) do
-    "LOW & DECLINING: User energy dropping. Reduce complexity, pause deep analysis."
+  defp engagement_alert_message(:low, :declining, alerts) do
+    alerts[:low_declining] || "LOW & DECLINING: User energy dropping. Reduce complexity, pause deep analysis."
   end
-  defp engagement_alert_message(:low, _) do
-    "LOW: User energy is low. Keep interactions light."
+  defp engagement_alert_message(:low, _, alerts) do
+    alerts[:low] || "LOW: User energy is low. Keep interactions light."
   end
-  defp engagement_alert_message(_, _), do: "Monitor engagement."
+  defp engagement_alert_message(_, _, alerts) do
+    alerts[:default] || "Monitor engagement."
+  end
 
   defp subscribe_to_signals do
     InterviewBus.subscribe("interview.utterance.user")

@@ -1,0 +1,118 @@
+# Engagement Monitor Configuration
+# Controls engagement detection, scoring, and alerts
+
+# Phrases indicating user wants to end the conversation
+wrap_up_markers:
+  - "wrap up"
+  - "let's wrap"
+  - "wrapping up"
+  - "finish"
+  - "let's finish"
+  - "move on"
+  - "let's move on"
+  - "already explained"
+  - "already said"
+  - "end the interview"
+  - "that's enough"
+  - "i'm done"
+  - "let's end"
+  - "can we finish"
+  - "ready to finish"
+  - "time to wrap"
+
+# Markers indicating enthusiasm
+enthusiasm_markers:
+  - "!"
+  - "love"
+  - "excited"
+  - "amazing"
+  - "great"
+  - "absolutely"
+  - "definitely"
+  - "really"
+
+# Markers indicating resistance or disengagement
+resistance_markers:
+  - "i don't know"
+  - "not sure"
+  - "maybe"
+  - "i guess"
+  - "whatever"
+  - "fine"
+  - "ok"
+  - "sure"
+
+# Markers indicating elaboration (positive engagement)
+elaboration_markers:
+  - "for example"
+  - "like when"
+  - "i remember"
+  - "one time"
+  - "because"
+  - "the reason"
+  - "actually"
+
+# Words for sentiment estimation
+sentiment:
+  positive_words:
+    - "love"
+    - "great"
+    - "amazing"
+    - "wonderful"
+    - "happy"
+    - "excited"
+    - "good"
+    - "best"
+  negative_words:
+    - "hate"
+    - "bad"
+    - "terrible"
+    - "awful"
+    - "frustrated"
+    - "annoyed"
+    - "difficult"
+    - "hard"
+
+# Scoring weights for engagement calculation
+scoring:
+  terse_response: -2      # Very short responses (< 5 words)
+  verbose_response: 1     # Detailed responses (> 100 words)
+  medium_response: 1      # > 20 words
+  short_response: -1      # < 10 words
+  enthusiasm_detected: 1  # Positive/excited language
+  resistance_detected: -2 # Pushback or reluctance
+  elaboration: 1          # Expanding on previous answers
+  positive_sentiment: 1
+  negative_sentiment: -1
+
+# Word count thresholds
+thresholds:
+  terse_max: 5
+  short_max: 10
+  medium_min: 20
+  verbose_min: 100
+  resistance_min_count: 2
+  resistance_short_length: 30
+
+# Thresholds for engagement levels (score-based)
+level_thresholds:
+  high: 2      # Score >= 2 = high engagement
+  medium: 0    # Score >= 0 = medium engagement
+  low: -2      # Score >= -2 = low engagement
+  # Score < -2 = critical engagement
+
+# Recommendations for different engagement states
+recommendations:
+  critical: "Consider wrapping up or changing topic"
+  low_declining: "Try a different approach or easier question"
+  low: "Keep questions light and build rapport"
+  medium_declining: "Engagement dropping, consider a more engaging topic"
+  high: "Good engagement, continue current approach"
+  default: "Monitor and adjust as needed"
+
+# Alert messages for broadcast signals
+alerts:
+  critical: "CRITICAL: User wants to wrap up. All agents should facilitate closing."
+  low_declining: "LOW & DECLINING: User energy dropping. Reduce complexity, pause deep analysis."
+  low: "LOW: User energy is low. Keep interactions light."
+  default: "Monitor engagement."

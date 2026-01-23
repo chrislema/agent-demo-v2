@@ -61,6 +61,9 @@ defmodule InterviewStudio.MixProject do
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
 
+      # Config file parsing
+      {:yaml_elixir, "~> 2.9"},
+
       # Jido Framework - using Hex versions for stability
       {:jido, "~> 1.2", override: true},
       {:jido_ai, "~> 0.5", override: true},

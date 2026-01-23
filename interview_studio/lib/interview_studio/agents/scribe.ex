@@ -15,6 +15,17 @@ defmodule InterviewStudio.Agents.Scribe do
   require Logger
 
   alias InterviewStudio.InterviewBus
+  alias InterviewStudio.ConfigLoader
+
+  # Default config (used if YAML file not found)
+  @default_config %{
+    quote_detection: %{
+      min_length: 200,
+      emotional_words: ~w(love hate afraid excited nervous proud frustrated happy sad angry passionate),
+      reflection_phrases: ["i realized", "i learned", "i discovered", "i understood", "it hit me", "i knew then", "that's when i"],
+      key_phrases: ["the most important", "what matters most", "my purpose", "what drives me", "the turning point", "changed everything"]
+    }
+  }
 
   defstruct [
     :session_id,
@@ -23,7 +34,8 @@ defmodule InterviewStudio.Agents.Scribe do
     :phase_summaries,
     :current_phase,
     :phase_start_time,
-    :phase_messages
+    :phase_messages,
+    :config
   ]
 
   # Client API
@@ -60,6 +72,9 @@ defmodule InterviewStudio.Agents.Scribe do
   def init(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
 
+    # Load config from YAML, falling back to defaults
+    config = ConfigLoader.load_with_defaults(:scribe, @default_config)
+
     state = %__MODULE__{
       session_id: session_id,
       transcript: [],
@@ -67,7 +82,8 @@ defmodule InterviewStudio.Agents.Scribe do
       phase_summaries: %{},
       current_phase: :preparation,
       phase_start_time: DateTime.utc_now(),
-      phase_messages: []
+      phase_messages: [],
+      config: config
     }
 
     subscribe_to_signals()
@@ -170,21 +186,24 @@ defmodule InterviewStudio.Agents.Scribe do
   # Quote detection
 
   defp maybe_tag_quote(entry, state) do
+    quote_config = state.config[:quote_detection] || %{}
+    min_length = quote_config[:min_length] || 200
+
     cond do
       # Long, substantive responses often contain good quotes
-      String.length(entry.content) > 200 ->
+      String.length(entry.content) > min_length ->
         tag_quote(entry, ["substantive"], state)
 
       # Emotional language
-      contains_emotional_language?(entry.content) ->
+      contains_emotional_language?(entry.content, quote_config) ->
         tag_quote(entry, ["emotional"], state)
 
       # Self-reflection
-      contains_self_reflection?(entry.content) ->
+      contains_self_reflection?(entry.content, quote_config) ->
         tag_quote(entry, ["reflection"], state)
 
       # Key phrases
-      contains_key_phrases?(entry.content) ->
+      contains_key_phrases?(entry.content, quote_config) ->
         tag_quote(entry, ["insight"], state)
 
       true ->
@@ -207,20 +226,20 @@ defmodule InterviewStudio.Agents.Scribe do
     %{state | quotes: [quote_entry | state.quotes]}
   end
 
-  defp contains_emotional_language?(text) do
-    emotional_words = ~w(love hate afraid excited nervous proud frustrated happy sad angry passionate)
+  defp contains_emotional_language?(text, config) do
+    emotional_words = config[:emotional_words] || ~w(love hate afraid excited nervous proud frustrated happy sad angry passionate)
     downcased = String.downcase(text)
     Enum.any?(emotional_words, fn word -> String.contains?(downcased, word) end)
   end
 
-  defp contains_self_reflection?(text) do
-    reflection_phrases = ["i realized", "i learned", "i discovered", "i understood", "it hit me", "i knew then", "that's when i"]
+  defp contains_self_reflection?(text, config) do
+    reflection_phrases = config[:reflection_phrases] || ["i realized", "i learned", "i discovered", "i understood", "it hit me", "i knew then", "that's when i"]
     downcased = String.downcase(text)
     Enum.any?(reflection_phrases, fn phrase -> String.contains?(downcased, phrase) end)
   end
 
-  defp contains_key_phrases?(text) do
-    key_phrases = ["the most important", "what matters most", "my purpose", "what drives me", "the turning point", "changed everything"]
+  defp contains_key_phrases?(text, config) do
+    key_phrases = config[:key_phrases] || ["the most important", "what matters most", "my purpose", "what drives me", "the turning point", "changed everything"]
     downcased = String.downcase(text)
     Enum.any?(key_phrases, fn phrase -> String.contains?(downcased, phrase) end)
   end

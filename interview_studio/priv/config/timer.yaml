@@ -1,0 +1,17 @@
+# Timer Agent Configuration
+# Controls timing milestones and wrap-up suggestions
+
+milestones:
+  - 5   # First milestone at 5 minutes
+  - 10  # Second milestone at 10 minutes
+
+tick_interval_ms: 60000  # Check every 60 seconds (1 minute)
+
+wrap_up:
+  time_threshold_minutes: 10        # Suggest wrap-up after 10 minutes
+  frustration_threshold_minutes: 5  # If frustrated, suggest wrap-up after 5 minutes
+
+recommendations:
+  milestone_5: "Interview reaching 5 minutes - good time for a status check"
+  milestone_10: "Interview at 10 minutes - consider transitioning toward synthesis"
+  wrap_up: "We should likely wrap up - conversation has been going for a while"
