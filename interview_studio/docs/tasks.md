@@ -220,7 +220,7 @@ This file tracks implementation tasks for transforming the Interview Studio from
 ## Phase 5: UI Visibility of Collaboration
 
 ### 5.1 Agent Communication Log in Debug Panel
-- [ ] **Task:** Show agent-to-agent messages in debug panel
+- [x] **Task:** Show agent-to-agent messages in debug panel
 - **Acceptance Criteria:**
   - Debug panel shows inter-agent communication
   - Format: `[timestamp] Source → Target: message`
@@ -232,7 +232,7 @@ This file tracks implementation tasks for transforming the Interview Studio from
   - Messages show clear source → target flow
 
 ### 5.2 Synthesis Visualization
-- [ ] **Task:** Show how Director synthesizes agent inputs
+- [x] **Task:** Show how Director synthesizes agent inputs
 - **Acceptance Criteria:**
   - Before each Director response, show inputs received
   - Visual: Themes + Probes + Engagement → Question
@@ -243,7 +243,7 @@ This file tracks implementation tasks for transforming the Interview Studio from
   - Can trace why a specific question was asked
 
 ### 5.3 Real-Time Collaboration Indicators
-- [ ] **Task:** Add visual indicators showing agents are actively collaborating
+- [x] **Task:** Add visual indicators showing agents are actively collaborating
 - **Acceptance Criteria:**
   - Pulsing indicators when agents are analyzing
   - Arrows/lines showing active communication
@@ -254,7 +254,7 @@ This file tracks implementation tasks for transforming the Interview Studio from
   - Clear indication that multiple agents are working
 
 ### 5.4 Agent Influence Attribution
-- [ ] **Task:** Show which agent(s) influenced each interviewer question
+- [x] **Task:** Show which agent(s) influenced each interviewer question
 - **Acceptance Criteria:**
   - Each question tagged with contributing agents
   - Hover/click shows detailed attribution
@@ -380,10 +380,10 @@ This file tracks implementation tasks for transforming the Interview Studio from
 | 2. Dynamic Questions | 3 | 3/3 |
 | 3. Agent Communication | 4 | 4/4 |
 | 4. Consensus Mechanisms | 3 | 3/3 |
-| 5. UI Visibility | 4 | 0/4 |
+| 5. UI Visibility | 4 | 4/4 |
 | 6. Validation & Testing | 4 | 0/4 |
 | 7. Performance | 3 | 0/3 |
-| **Total** | **24** | **13/24** |
+| **Total** | **24** | **17/24** |
 
 ---
 

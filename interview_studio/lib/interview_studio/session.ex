@@ -389,6 +389,7 @@ defmodule InterviewStudio.Session do
   end
 
   defp publish_host_utterance(content, action, _session_id) do
+    # Phase 5: Include attribution data for debug panel visibility
     signal = %Jido.Signal{
       type: "interview.utterance.host",
       source: "director",
@@ -397,11 +398,31 @@ defmodule InterviewStudio.Session do
         content: content,
         timestamp: DateTime.utc_now(),
         action_type: action[:type],
-        question_id: action[:question_id]
+        question_id: action[:question_id],
+        # Attribution data for Phase 5 UI visibility
+        action_source: action[:source],
+        topic: action[:topic],
+        themes_used: extract_theme_names(action[:themes]),
+        probes_used: extract_probe_topics(action[:probes]),
+        engagement: action[:engagement],
+        consensus: action[:consensus],
+        votes: action[:votes]
       }
     }
     InterviewBus.publish(signal)
   end
+
+  defp extract_theme_names(nil), do: []
+  defp extract_theme_names(themes) when is_list(themes) do
+    Enum.map(themes, fn t -> t[:theme] || t.theme || "unknown" end) |> Enum.take(5)
+  end
+  defp extract_theme_names(_), do: []
+
+  defp extract_probe_topics(nil), do: []
+  defp extract_probe_topics(probes) when is_list(probes) do
+    Enum.map(probes, fn p -> p[:topic] || p.topic || "unknown" end) |> Enum.take(3)
+  end
+  defp extract_probe_topics(_), do: []
 
   defp generate_session_id do
     :crypto.strong_rand_bytes(8) |> Base.url_encode64(padding: false)
