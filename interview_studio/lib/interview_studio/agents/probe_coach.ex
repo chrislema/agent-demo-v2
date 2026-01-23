@@ -23,6 +23,7 @@ defmodule InterviewStudio.Agents.ProbeCoach do
     :last_user_message,
     :received_themes,      # Themes received from Story Analyst
     :engagement_level,     # Current engagement from Engagement Monitor
+    :frustration_level,    # From Sentiment Agent - affects probe suggestions
     :llm_config
   ]
 
@@ -73,6 +74,7 @@ defmodule InterviewStudio.Agents.ProbeCoach do
       last_user_message: nil,
       received_themes: [],
       engagement_level: :high,
+      frustration_level: :none,
       llm_config: llm_config
     }
 
@@ -177,9 +179,11 @@ defmodule InterviewStudio.Agents.ProbeCoach do
     updated_themes = [theme_entry | state.received_themes] |> Enum.take(10)
     new_state = %{state | received_themes: updated_themes}
 
-    # Generate a theme-aware probe if engagement is good
-    if state.engagement_level in [:high, :medium] do
+    # Generate a theme-aware probe if engagement is good and user isn't frustrated
+    if state.engagement_level in [:high, :medium] and state.frustration_level in [:none, :mild] do
       generate_theme_probe_async(theme_entry, new_state)
+    else
+      Logger.debug("[ProbeCoach] Skipping theme probe - engagement: #{state.engagement_level}, frustration: #{state.frustration_level}")
     end
 
     new_state
@@ -199,6 +203,22 @@ defmodule InterviewStudio.Agents.ProbeCoach do
     end
 
     %{state | engagement_level: level, pending_probes: new_probes}
+  end
+
+  # CROSS-AGENT: Receive frustration signals from Sentiment Agent
+  defp handle_signal(%{type: "observer.status.frustration"} = signal, state) do
+    level = signal.data[:level] || :none
+    Logger.debug("[ProbeCoach] <- [SentimentAgent] Frustration: #{level}")
+
+    # If frustration is moderate or high, clear non-urgent probes to avoid adding pressure
+    new_probes = if level in [:moderate, :high] do
+      Logger.info("[ProbeCoach] Frustration detected (#{level}) - clearing non-urgent probes")
+      Enum.filter(state.pending_probes, fn p -> p.priority in [:high, :urgent] end)
+    else
+      state.pending_probes
+    end
+
+    %{state | frustration_level: level, pending_probes: new_probes}
   end
 
   defp handle_signal(_signal, state), do: state
@@ -514,6 +534,8 @@ defmodule InterviewStudio.Agents.ProbeCoach do
     InterviewBus.subscribe("analyst.theme.discovered")
     # Subscribe to engagement updates from Engagement Monitor
     InterviewBus.subscribe("observer.status.engagement")
+    # CROSS-AGENT: Subscribe to frustration signals from Sentiment Agent
+    InterviewBus.subscribe("observer.status.frustration")
   end
 
   defp via_tuple(session_id) do

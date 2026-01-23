@@ -21,7 +21,11 @@ defmodule InterviewStudio.Agents.TimerAgent do
     :session_id,
     :started_at,
     :milestones_hit,
-    :timer_ref
+    :timer_ref,
+    :current_phase,          # Track current phase for timing recommendations
+    :phase_started_at,       # When current phase started
+    :frustration_level,      # From Sentiment Agent - affects wrap-up recommendations
+    :frustration_wrap_up_emitted  # Track if we've already suggested wrap-up due to frustration
   ]
 
   # Client API
@@ -52,13 +56,23 @@ defmodule InterviewStudio.Agents.TimerAgent do
   @impl true
   def init(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
+    now = DateTime.utc_now()
 
     state = %__MODULE__{
       session_id: session_id,
-      started_at: DateTime.utc_now(),
+      started_at: now,
       milestones_hit: [],
-      timer_ref: nil
+      timer_ref: nil,
+      current_phase: :opening,
+      phase_started_at: now,
+      frustration_level: :none,
+      frustration_wrap_up_emitted: false
     }
+
+    # CROSS-AGENT: Subscribe to phase changes for timing context
+    InterviewBus.subscribe("interview.phase.**")
+    # CROSS-AGENT: Subscribe to frustration signals - recommend wrap-up when frustrated
+    InterviewBus.subscribe("observer.status.frustration")
 
     # Start the timer tick
     timer_ref = Process.send_after(self(), :tick, @tick_interval)
@@ -123,11 +137,56 @@ defmodule InterviewStudio.Agents.TimerAgent do
     # Update state with new milestones
     new_state = %{state | milestones_hit: state.milestones_hit ++ new_milestones}
 
+    # CROSS-AGENT: Check if frustration + time suggests wrap-up
+    new_state = check_frustration_wrap_up(elapsed, new_state)
+
     # Schedule next tick
     timer_ref = Process.send_after(self(), :tick, @tick_interval)
 
     {:noreply, %{new_state | timer_ref: timer_ref}}
   end
+
+  # CROSS-AGENT: Receive phase changes
+  @impl true
+  def handle_info({:signal, %{type: "interview.phase." <> _} = signal}, state) do
+    phase = signal.data[:phase] || signal.data[:to_phase]
+    if phase do
+      Logger.debug("[TimerAgent] <- [Director] Phase change: #{phase}")
+      now = DateTime.utc_now()
+      phase_duration = if state.phase_started_at do
+        DateTime.diff(now, state.phase_started_at, :second) / 60 |> Float.round(1)
+      else
+        0
+      end
+      Logger.info("[TimerAgent] Phase #{state.current_phase} lasted #{phase_duration} minutes")
+      {:noreply, %{state | current_phase: phase, phase_started_at: now}}
+    else
+      {:noreply, state}
+    end
+  end
+
+  # CROSS-AGENT: Receive frustration signals from Sentiment Agent
+  @impl true
+  def handle_info({:signal, %{type: "observer.status.frustration"} = signal}, state) do
+    level = signal.data[:level] || :none
+    Logger.debug("[TimerAgent] <- [SentimentAgent] Frustration: #{level}")
+    elapsed = elapsed_minutes(state.started_at)
+
+    new_state = %{state | frustration_level: level}
+
+    # If frustration is moderate+ and we're past 5 minutes, suggest wrap-up
+    new_state = if level in [:moderate, :high] and elapsed >= 5 and not state.frustration_wrap_up_emitted do
+      emit_wrap_up_signal(elapsed, level, state.session_id)
+      %{new_state | frustration_wrap_up_emitted: true}
+    else
+      new_state
+    end
+
+    {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_info({:signal, _}, state), do: {:noreply, state}
 
   @impl true
   def terminate(_reason, state) do
@@ -163,6 +222,37 @@ defmodule InterviewStudio.Agents.TimerAgent do
 
     InterviewBus.publish(signal)
     Logger.info("[TimerAgent] Milestone reached: #{milestone} minutes (#{elapsed} elapsed)")
+  end
+
+  # CROSS-AGENT: Emit wrap-up signal when user is frustrated and we have enough time elapsed
+  defp emit_wrap_up_signal(elapsed, frustration_level, _session_id) do
+    signal = %Jido.Signal{
+      type: "observer.suggestion.wrap_up",
+      source: "timer_agent",
+      id: Jido.Util.generate_id(),
+      data: %{
+        elapsed_minutes: elapsed,
+        reason: :frustration_detected,
+        frustration_level: frustration_level,
+        recommendation: "User shows frustration after #{round(elapsed)} minutes - consider wrapping up",
+        timestamp: DateTime.utc_now()
+      }
+    }
+
+    InterviewBus.publish(signal)
+    Logger.info("[TimerAgent] Suggesting wrap-up: frustration #{frustration_level} at #{round(elapsed)} minutes")
+  end
+
+  # Check during tick if we should emit frustration-based wrap-up
+  defp check_frustration_wrap_up(elapsed, state) do
+    if state.frustration_level in [:moderate, :high] and
+       elapsed >= 5 and
+       not state.frustration_wrap_up_emitted do
+      emit_wrap_up_signal(elapsed, state.frustration_level, state.session_id)
+      %{state | frustration_wrap_up_emitted: true}
+    else
+      state
+    end
   end
 
   defp via_tuple(session_id) do

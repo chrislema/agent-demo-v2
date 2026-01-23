@@ -19,7 +19,9 @@ defmodule InterviewStudio.Agents.SentimentAgent do
     :frustration_level,      # :none, :mild, :moderate, :high
     :frustration_history,    # Track recent frustration indicators
     :last_analysis,
-    :consecutive_short_answers
+    :consecutive_short_answers,
+    :engagement_level,       # From Engagement Monitor - affects frustration escalation
+    :current_phase           # From phase changes - affects frustration tolerance
   ]
 
   # Frustration indicators
@@ -84,11 +86,17 @@ defmodule InterviewStudio.Agents.SentimentAgent do
       frustration_level: :none,
       frustration_history: [],
       last_analysis: nil,
-      consecutive_short_answers: 0
+      consecutive_short_answers: 0,
+      engagement_level: :high,
+      current_phase: :opening
     }
 
     # Subscribe to user messages
     InterviewBus.subscribe("interview.utterance.user")
+    # CROSS-AGENT: Subscribe to engagement updates - when engagement drops, escalate frustration
+    InterviewBus.subscribe("observer.status.engagement")
+    # CROSS-AGENT: Subscribe to phase changes - be more lenient on frustration during closing
+    InterviewBus.subscribe("interview.phase.**")
 
     Logger.info("[SentimentAgent] Started for session #{session_id}")
     {:ok, state}
@@ -136,6 +144,38 @@ defmodule InterviewStudio.Agents.SentimentAgent do
     message = signal.data[:content] || ""
     new_state = analyze_and_update(message, state)
     {:noreply, new_state}
+  end
+
+  # CROSS-AGENT: Receive engagement updates from Engagement Monitor
+  @impl true
+  def handle_info({:signal, %{type: "observer.status.engagement"} = signal}, state) do
+    level = signal.data[:level] || :high
+    Logger.debug("[SentimentAgent] <- [EngagementMonitor] Engagement: #{level}")
+    new_state = %{state | engagement_level: level}
+
+    # If engagement is critical and we have any frustration, escalate it
+    new_state = if level == :critical and state.frustration_level not in [:none] do
+      escalated = escalate_frustration(state.frustration_level)
+      Logger.info("[SentimentAgent] Escalating frustration from #{state.frustration_level} to #{escalated} due to critical engagement")
+      emit_frustration_signal(escalated, [:engagement_critical], state.session_id)
+      %{new_state | frustration_level: escalated}
+    else
+      new_state
+    end
+
+    {:noreply, new_state}
+  end
+
+  # CROSS-AGENT: Receive phase changes - adjust frustration tolerance
+  @impl true
+  def handle_info({:signal, %{type: "interview.phase." <> _} = signal}, state) do
+    phase = signal.data[:phase] || signal.data[:to_phase]
+    if phase do
+      Logger.debug("[SentimentAgent] <- [Director] Phase change: #{phase}")
+      {:noreply, %{state | current_phase: phase}}
+    else
+      {:noreply, state}
+    end
   end
 
   @impl true
@@ -241,6 +281,22 @@ defmodule InterviewStudio.Agents.SentimentAgent do
 
     score = score + recent_frustration
 
+    # CROSS-AGENT: Be more lenient during closing phase (short answers expected)
+    score = if state.current_phase in [:closing, :synthesis] do
+      # Reduce score during closing - short answers are normal when wrapping up
+      max(score - 2, 0)
+    else
+      score
+    end
+
+    # CROSS-AGENT: Factor in engagement level - if engagement is low, be more sensitive
+    score = if state.engagement_level == :critical and score > 0 do
+      # Boost score if we're already detecting something and engagement is critical
+      score + 1
+    else
+      score
+    end
+
     # Map score to level
     cond do
       score >= 5 -> :high
@@ -249,6 +305,11 @@ defmodule InterviewStudio.Agents.SentimentAgent do
       true -> :none
     end
   end
+
+  # Helper to escalate frustration level when engagement is critical
+  defp escalate_frustration(:mild), do: :moderate
+  defp escalate_frustration(:moderate), do: :high
+  defp escalate_frustration(level), do: level
 
   defp emit_frustration_signal(level, indicators, _session_id) do
     recommendation = case level do

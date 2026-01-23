@@ -23,7 +23,8 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
     :conversation_buffer,
     :analysis_count,
     :engagement_level,     # Current engagement from Engagement Monitor
-    :llm_config
+    :llm_config,
+    :probe_suggestions     # Topics suggested by Probe Coach for theme prioritization
   ]
 
   @analysis_threshold 2  # Analyze every N user messages
@@ -75,7 +76,8 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
       conversation_buffer: [],
       analysis_count: 0,
       engagement_level: :high,
-      llm_config: llm_config
+      llm_config: llm_config,
+      probe_suggestions: []
     }
 
     subscribe_to_signals()
@@ -192,6 +194,24 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
     %{state | engagement_level: level}
   end
 
+  # CROSS-AGENT: Receive probe suggestions from Probe Coach
+  # Store these to prioritize theme analysis in suggested areas
+  defp handle_signal(%{type: "observer.suggestion.probe"} = signal, state) do
+    topic = signal.data[:topic]
+    if topic do
+      Logger.debug("[StoryAnalyst] <- [ProbeCoach] Received probe suggestion: #{topic}")
+      suggestion = %{
+        topic: topic,
+        rationale: signal.data[:rationale],
+        timestamp: DateTime.utc_now()
+      }
+      updated_suggestions = [suggestion | state.probe_suggestions] |> Enum.take(5)
+      %{state | probe_suggestions: updated_suggestions}
+    else
+      state
+    end
+  end
+
   defp handle_signal(_signal, state), do: state
 
   # Analysis
@@ -251,13 +271,24 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
     |> Enum.map(fn t -> t.theme end)
     |> Enum.join(", ")
 
+    # CROSS-AGENT: Include Probe Coach suggestions as areas to prioritize
+    probe_topics = state.probe_suggestions
+    |> Enum.map(fn s -> s.topic end)
+    |> Enum.join(", ")
+
+    probe_context = if probe_topics != "" do
+      "\n\nAreas suggested for deeper exploration by Probe Coach: #{probe_topics}\n(Prioritize identifying themes related to these areas if present in the conversation)"
+    else
+      ""
+    end
+
     prompt = """
     Analyze this interview conversation for narrative themes and patterns.
 
     Conversation:
     #{conversation}
 
-    Already identified themes: #{if existing_themes == "", do: "none yet", else: existing_themes}
+    Already identified themes: #{if existing_themes == "", do: "none yet", else: existing_themes}#{probe_context}
 
     Identify:
     1. NEW themes (don't repeat existing ones) - core values, motivations, defining characteristics
@@ -448,6 +479,8 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
     # AGENT-TO-AGENT: Subscribe to engagement alerts from Engagement Monitor
     InterviewBus.subscribe("engagement.alert.broadcast")
     InterviewBus.subscribe("observer.status.engagement")
+    # CROSS-AGENT: Subscribe to Probe Coach suggestions to inform theme prioritization
+    InterviewBus.subscribe("observer.suggestion.probe")
   end
 
   defp via_tuple(session_id) do
