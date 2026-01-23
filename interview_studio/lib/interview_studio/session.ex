@@ -13,6 +13,8 @@ defmodule InterviewStudio.Session do
   alias InterviewStudio.Pipeline.InterviewFSM
   alias InterviewStudio.Agents.{Director, Scribe, StoryAnalyst, ProbeCoach, EngagementMonitor}
   alias InterviewStudio.InterviewBus
+  alias InterviewStudio.Performance
+  alias InterviewStudio.AgentSupervisor
 
   @doc """
   Start a new interview session with all agents.
@@ -21,20 +23,14 @@ defmodule InterviewStudio.Session do
   def start_session(opts \\ []) do
     session_id = Keyword.get(opts, :session_id, generate_session_id())
 
-    with {:ok, _fsm} <- start_fsm(session_id),
-         {:ok, _director} <- start_director(session_id, opts),
-         {:ok, _scribe} <- start_scribe(session_id),
-         {:ok, _analyst} <- start_story_analyst(session_id, opts),
-         {:ok, _coach} <- start_probe_coach(session_id, opts),
-         {:ok, _monitor} <- start_engagement_monitor(session_id) do
+    # PHASE 7: Use AgentSupervisor for failure isolation
+    case AgentSupervisor.start_session_agents(session_id, opts) do
+      {:ok, ^session_id} ->
+        Logger.info("[Session] Started session #{session_id}")
+        {:ok, session_id}
 
-      Logger.info("[Session] Started session #{session_id}")
-      {:ok, session_id}
-    else
       {:error, reason} ->
         Logger.error("[Session] Failed to start session: #{inspect(reason)}")
-        # Attempt cleanup
-        stop_session(session_id)
         {:error, reason}
     end
   end
@@ -43,14 +39,8 @@ defmodule InterviewStudio.Session do
   Stop an interview session and all its agents.
   """
   def stop_session(session_id) do
-    # Stop all agents (ignore errors from already-stopped processes)
-    stop_agent(:fsm, session_id)
-    stop_agent(:director, session_id)
-    stop_agent(:scribe, session_id)
-    stop_agent(:story_analyst, session_id)
-    stop_agent(:probe_coach, session_id)
-    stop_agent(:engagement_monitor, session_id)
-
+    # PHASE 7: Use AgentSupervisor to stop all agents
+    AgentSupervisor.stop_session_agents(session_id)
     Logger.info("[Session] Stopped session #{session_id}")
     :ok
   end
@@ -64,8 +54,24 @@ defmodule InterviewStudio.Session do
       fsm_phase: get_fsm_phase(session_id),
       director: get_director_state(session_id),
       scribe: get_scribe_state(session_id),
-      engagement: get_engagement_level(session_id)
+      engagement: get_engagement_level(session_id),
+      # PHASE 7: Include agent health status
+      agent_status: AgentSupervisor.session_status(session_id)
     }
+  end
+
+  @doc """
+  Get performance metrics for the system.
+  """
+  def get_performance_metrics do
+    Performance.get_metrics()
+  end
+
+  @doc """
+  Get recent operation timings.
+  """
+  def get_recent_timings(limit \\ 10) do
+    Performance.get_recent_timings(limit)
   end
 
   @doc """
@@ -80,18 +86,30 @@ defmodule InterviewStudio.Session do
   5. Execute action
   """
   def process_message(session_id, message) do
+    # PHASE 7: Track overall response time
+    op_id = Performance.record_start(:process_message, %{session_id: session_id})
+
+    # Invalidate insight cache when new message arrives
+    Performance.invalidate_cache(session_id)
+
     # Record the message with Director
     :ok = Director.process_user_message(session_id, message)
 
     # MULTI-AGENT: Gather insights from all observers in parallel
     # This is the synchronization barrier - we wait for all agents before deciding
-    insights = gather_insights(session_id, timeout: 3000)
+    # PHASE 7: Use 4 second timeout to leave room for response generation
+    insights = gather_insights(session_id, timeout: 4_000)
 
     # Get Director's next action, informed by agent insights
     action = Director.get_next_action(session_id, insights)
 
     # Handle the action
-    handle_action(session_id, action)
+    result = handle_action(session_id, action)
+
+    # PHASE 7: Record timing
+    Performance.record_end(op_id)
+
+    result
   end
 
   @doc """
@@ -109,13 +127,16 @@ defmodule InterviewStudio.Session do
   If an agent times out, partial results from other agents are still included.
   """
   def gather_insights(session_id, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, 3000)
+    timeout = Keyword.get(opts, :timeout, 4_000)
 
-    # Start parallel tasks for each observer agent
+    # PHASE 7: Track insight gathering time
+    op_id = Performance.record_start(:gather_insights, %{session_id: session_id})
+
+    # Start parallel tasks for each observer agent with circuit breaker protection
     tasks = [
-      Task.async(fn -> {:themes, get_story_analyst_insights(session_id)} end),
-      Task.async(fn -> {:probes, get_probe_coach_insights(session_id)} end),
-      Task.async(fn -> {:engagement, get_engagement_insights(session_id)} end)
+      Task.async(fn -> {:themes, get_story_analyst_insights_safe(session_id)} end),
+      Task.async(fn -> {:probes, get_probe_coach_insights_safe(session_id)} end),
+      Task.async(fn -> {:engagement, get_engagement_insights_safe(session_id)} end)
     ]
 
     # Wait for all tasks with timeout
@@ -123,10 +144,10 @@ defmodule InterviewStudio.Session do
 
     # Collect results, using defaults for timed-out tasks
     insights = Enum.reduce(results, %{themes: [], probes: [], engagement: default_engagement()}, fn
-      {task, {:ok, {key, value}}}, acc ->
+      {_task, {:ok, {key, value}}}, acc ->
         Map.put(acc, key, value)
 
-      {task, {:exit, reason}}, acc ->
+      {_task, {:exit, reason}}, acc ->
         Logger.warning("[Session] Agent task failed: #{inspect(reason)}")
         acc
 
@@ -137,8 +158,63 @@ defmodule InterviewStudio.Session do
         acc
     end)
 
+    # PHASE 7: Record timing
+    Performance.record_end(op_id)
+
     Logger.debug("[Session] Gathered insights: #{inspect(insights, pretty: true, limit: 3)}")
     insights
+  end
+
+  # PHASE 7: Wrapped insight getters with circuit breakers and caching
+
+  defp get_story_analyst_insights_safe(session_id) do
+    # Check cache first
+    case Performance.get_cached_insights(session_id, :story_analyst) do
+      {:ok, cached} -> cached
+      :miss ->
+        # Use circuit breaker
+        case Performance.with_circuit_breaker(:story_analyst, fn ->
+          get_story_analyst_insights(session_id)
+        end) do
+          {:ok, insights} ->
+            Performance.cache_insights(session_id, :story_analyst, insights)
+            insights
+          {:error, :circuit_open} ->
+            Logger.warning("[Session] Story Analyst circuit open, using empty themes")
+            []
+          {:error, _} ->
+            []
+        end
+    end
+  end
+
+  defp get_probe_coach_insights_safe(session_id) do
+    case Performance.get_cached_insights(session_id, :probe_coach) do
+      {:ok, cached} -> cached
+      :miss ->
+        case Performance.with_circuit_breaker(:probe_coach, fn ->
+          get_probe_coach_insights(session_id)
+        end) do
+          {:ok, insights} ->
+            Performance.cache_insights(session_id, :probe_coach, insights)
+            insights
+          {:error, :circuit_open} ->
+            Logger.warning("[Session] Probe Coach circuit open, using empty probes")
+            []
+          {:error, _} ->
+            []
+        end
+    end
+  end
+
+  defp get_engagement_insights_safe(session_id) do
+    # Engagement doesn't use LLM, so no caching needed, but still use circuit breaker
+    case Performance.with_circuit_breaker(:engagement_monitor, fn ->
+      get_engagement_insights(session_id)
+    end) do
+      {:ok, insights} -> insights
+      {:error, _} -> default_engagement()
+    end
   end
 
   defp get_story_analyst_insights(session_id) do
@@ -210,44 +286,7 @@ defmodule InterviewStudio.Session do
   end
 
   # Private functions
-
-  defp start_fsm(session_id) do
-    InterviewFSM.start_link(session_id: session_id)
-  end
-
-  defp start_director(session_id, opts) do
-    llm_config = Keyword.get(opts, :llm_config, %{})
-    Director.start_link(session_id: session_id, llm_config: llm_config)
-  end
-
-  defp start_scribe(session_id) do
-    Scribe.start_link(session_id: session_id)
-  end
-
-  defp start_story_analyst(session_id, opts) do
-    llm_config = Keyword.get(opts, :llm_config, %{})
-    StoryAnalyst.start_link(session_id: session_id, llm_config: llm_config)
-  end
-
-  defp start_probe_coach(session_id, opts) do
-    llm_config = Keyword.get(opts, :llm_config, %{})
-    ProbeCoach.start_link(session_id: session_id, llm_config: llm_config)
-  end
-
-  defp start_engagement_monitor(session_id) do
-    EngagementMonitor.start_link(session_id: session_id)
-  end
-
-  defp stop_agent(type, session_id) do
-    case Registry.lookup(InterviewStudio.SessionRegistry, {type, session_id}) do
-      [{pid, _}] ->
-        GenServer.stop(pid, :normal, 5000)
-      [] ->
-        :ok
-    end
-  rescue
-    _ -> :ok
-  end
+  # Note: Agent start/stop moved to AgentSupervisor for Phase 7 failure isolation
 
   defp get_fsm_phase(session_id) do
     case InterviewFSM.current_phase(session_id) do

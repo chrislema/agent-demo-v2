@@ -15,6 +15,10 @@ defmodule InterviewStudio.Application do
       {Registry, keys: :unique, name: InterviewStudio.SessionRegistry},
       # Interview signal bus for multi-agent communication
       InterviewStudio.InterviewBus,
+      # Phase 7: Performance monitoring, circuit breakers, and caching
+      InterviewStudio.Performance,
+      # Phase 7: Agent supervisor for failure isolation
+      InterviewStudio.AgentSupervisor,
       # Start to serve requests, typically the last entry
       InterviewStudioWeb.Endpoint
     ]
