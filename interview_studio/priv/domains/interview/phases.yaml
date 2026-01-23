@@ -1,0 +1,115 @@
+# Interview Domain - Phase Configuration
+# This file defines the phases, questions, and categories for the interview flow.
+
+# Core categories for exploration (used by Director to track topics)
+core_categories:
+  - origin
+  - passion
+  - differentiation
+  - moments
+  - vision
+
+# Phase definitions
+phases:
+  preparation:
+    name: "Preparation"
+    description: "Initialize agents, load context"
+    entry_conditions:
+      - "Session created"
+    exit_criteria:
+      - "All agents ready"
+      - "Context loaded"
+    duration: automatic
+    questions: []
+
+  opening:
+    name: "Opening"
+    description: "Greeting, establish rapport, set expectations"
+    entry_conditions:
+      - "Preparation complete"
+    exit_criteria:
+      - "User has responded"
+      - "Rapport established"
+    duration: "1-2 exchanges"
+    questions:
+      - id: "opening_1"
+        text: "Hi! I'm excited to learn more about you and your story. This conversation will help create a compelling article that captures what makes you unique. Ready to dive in?"
+        purpose: "Set expectations and get consent"
+
+  core_questions:
+    name: "Core Questions"
+    description: "Primary interview questions exploring their story"
+    entry_conditions:
+      - "Opening complete"
+    exit_criteria:
+      - "All core questions asked"
+      - "Or time threshold reached"
+    duration: "Main portion"
+    questions:
+      - id: "origin_1"
+        text: "Let's start at the beginning. What's your background, and how did you get to where you are today?"
+        purpose: "Understand origin story"
+        category: origin
+      - id: "passion_1"
+        text: "What drives you? What are you most passionate about in your work?"
+        purpose: "Uncover motivations"
+        category: passion
+      - id: "unique_1"
+        text: "What would you say makes your approach or perspective unique? What do you do differently?"
+        purpose: "Identify differentiation"
+        category: differentiation
+      - id: "moment_1"
+        text: "Was there a pivotal moment or turning point that really shaped who you've become?"
+        purpose: "Find defining moments"
+        category: moments
+      - id: "vision_1"
+        text: "Where are you headed? What's the vision or goal you're working toward?"
+        purpose: "Understand future direction"
+        category: vision
+
+  probing:
+    name: "Probing"
+    description: "Follow up on themes, dig deeper"
+    entry_conditions:
+      - "Core questions complete"
+      - "Or high-value probe opportunity"
+    exit_criteria:
+      - "Probing depth satisfied"
+      - "Or diminishing returns"
+    duration: "Variable"
+    questions: []  # Generated dynamically based on themes
+
+  synthesis:
+    name: "Synthesis"
+    description: "Summarize key themes, confirm understanding"
+    entry_conditions:
+      - "Probing complete"
+    exit_criteria:
+      - "User confirms or corrects synthesis"
+    duration: "1-2 exchanges"
+    questions:
+      - id: "synthesis_1"
+        text: "Based on our conversation, here's what I'm hearing as the core of your story: [THEMES]. Does that resonate with you? Is there anything you'd add or change?"
+        purpose: "Confirm understanding"
+
+  closing:
+    name: "Closing"
+    description: "Thank user, explain next steps"
+    entry_conditions:
+      - "Synthesis confirmed"
+    exit_criteria:
+      - "Session complete"
+    duration: "1 exchange"
+    questions:
+      - id: "closing_1"
+        text: "Thank you so much for sharing your story with me. I have everything I need to write a compelling piece about you. Is there anything else you'd like to add before we wrap up?"
+        purpose: "Final opportunity and gratitude"
+
+# Phase order (for transitions)
+phase_order:
+  - preparation
+  - opening
+  - core_questions
+  - probing
+  - synthesis
+  - closing

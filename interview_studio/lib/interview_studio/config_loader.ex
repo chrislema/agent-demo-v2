@@ -65,10 +65,55 @@ defmodule InterviewStudio.ConfigLoader do
     end
   end
 
+  @doc """
+  Load a domain-specific config file.
+
+  Domain configs are stored in: priv/domains/{domain}/{config_name}.yaml
+
+  ## Examples
+
+      iex> ConfigLoader.load_domain_config("interview", :phases)
+      {:ok, %{phases: %{...}, core_categories: [...], ...}}
+
+      iex> ConfigLoader.load_domain_config("tutoring", :phases)
+      {:ok, %{phases: %{...}, ...}}
+  """
+  def load_domain_config(domain, config_name) when is_binary(domain) and is_atom(config_name) do
+    path = domain_config_path(domain, config_name)
+
+    case load_yaml(path) do
+      {:ok, config} ->
+        Logger.debug("[ConfigLoader] Loaded #{domain}/#{config_name} config from #{path}")
+        {:ok, atomize_keys(config)}
+
+      {:error, reason} ->
+        Logger.warning("[ConfigLoader] Failed to load #{domain}/#{config_name}: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  def load_domain_config(domain, config_name) when is_atom(domain) do
+    load_domain_config(Atom.to_string(domain), config_name)
+  end
+
+  @doc """
+  Load a domain-specific config with defaults.
+  """
+  def load_domain_config_with_defaults(domain, config_name, defaults) when is_map(defaults) do
+    case load_domain_config(domain, config_name) do
+      {:ok, config} -> deep_merge(defaults, config)
+      {:error, _} -> defaults
+    end
+  end
+
   # Private helpers
 
   defp config_path(config_name) do
     Application.app_dir(:interview_studio, "#{@config_dir}/#{config_name}.yaml")
+  end
+
+  defp domain_config_path(domain, config_name) do
+    Application.app_dir(:interview_studio, "priv/domains/#{domain}/#{config_name}.yaml")
   end
 
   defp load_yaml(path) do
