@@ -15,6 +15,7 @@ defmodule InterviewStudio.Agents.ProbeCoach do
   require Logger
 
   alias InterviewStudio.InterviewBus
+  alias InterviewStudio.PromptLoader
 
   defstruct [
     :session_id,
@@ -237,24 +238,13 @@ defmodule InterviewStudio.Agents.ProbeCoach do
   end
 
   defp generate_theme_probe(theme_entry, state) do
-    prompt = """
-    A theme has been identified in an interview: "#{theme_entry.theme}"
-    Evidence: #{theme_entry.evidence}
-
-    Generate ONE follow-up question that explores this theme more deeply.
-    The question should:
-    1. Connect to the theme naturally
-    2. Invite the person to share more about how this theme shows up in their life
-    3. Be specific, not generic
-
-    Respond in JSON:
-    {
-      "topic": "theme exploration: #{theme_entry.theme}",
-      "rationale": "why this theme deserves deeper exploration",
-      "question": "the follow-up question",
-      "priority": "medium"
+    variables = %{
+      theme: theme_entry.theme,
+      evidence: theme_entry.evidence
     }
-    """
+
+    prompt = PromptLoader.load_with_vars!("interview", "probe_coach", "theme_probe", variables,
+      default_theme_probe_prompt(theme_entry))
 
     case call_llm(prompt, state.llm_config) do
       {:ok, response} ->
@@ -272,6 +262,17 @@ defmodule InterviewStudio.Agents.ProbeCoach do
         end
       {:error, _} -> {:ok, nil}
     end
+  end
+
+  # Fallback theme probe prompt
+  defp default_theme_probe_prompt(theme_entry) do
+    """
+    A theme has been identified: "#{theme_entry.theme}"
+    Evidence: #{theme_entry.evidence}
+
+    Generate ONE follow-up question exploring this theme.
+    Respond in JSON: {"topic": "theme exploration", "rationale": "why", "question": "the question", "priority": "medium"}
+    """
   end
 
   # Quick heuristic check before calling LLM
@@ -369,37 +370,30 @@ defmodule InterviewStudio.Agents.ProbeCoach do
   end
 
   defp generate_probes(content, state) do
-    prompt = """
-    Analyze this interview response and suggest follow-up probes.
+    variables = %{content: content}
 
-    User said: "#{content}"
-
-    Look for:
-    1. Emotional language that deserves exploration
-    2. Vague statements needing specifics
-    3. Interesting tangents worth pursuing
-    4. Contradictions or tensions
-
-    Respond in this exact JSON format:
-    {
-      "probes": [
-        {
-          "topic": "what the probe is about",
-          "rationale": "why this is worth exploring",
-          "question": "the suggested follow-up question",
-          "priority": "high|medium|low"
-        }
-      ]
-    }
-
-    Only suggest 1-2 probes maximum. Only suggest if there's genuine depth to explore.
-    Return empty probes array if nothing stands out.
-    """
+    prompt = PromptLoader.load_with_vars!("interview", "probe_coach", "generate_probes", variables,
+      default_generate_probes_prompt(content))
 
     case call_llm(prompt, state.llm_config) do
       {:ok, response} -> parse_probes(response)
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  # Fallback probe generation prompt
+  defp default_generate_probes_prompt(content) do
+    """
+    Analyze this interview response and suggest follow-up probes.
+
+    User said: "#{content}"
+
+    Look for emotional language, vague statements, interesting tangents, or contradictions.
+
+    Respond in JSON: {"probes": [{"topic": "topic", "rationale": "why", "question": "follow-up", "priority": "high|medium|low"}]}
+
+    Only suggest 1-2 probes maximum.
+    """
   end
 
   defp parse_probes(response) do

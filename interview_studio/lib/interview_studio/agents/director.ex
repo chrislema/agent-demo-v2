@@ -21,6 +21,37 @@ defmodule InterviewStudio.Agents.Director do
 
   alias InterviewStudio.InterviewBus
   alias InterviewStudio.Pipeline.Phases
+  alias InterviewStudio.PromptLoader
+  alias InterviewStudio.ConfigLoader
+
+  # Default config (used if YAML file not found)
+  @default_config %{
+    topic_descriptions: %{
+      origin: "their ORIGIN STORY - their professional journey, how they got into this field, the path that led them here",
+      passion: "their PASSION - what drives them, what they care deeply about",
+      differentiation: "what makes them UNIQUE - their distinctive approach or perspective",
+      moments: "PIVOTAL MOMENTS - turning points that shaped who they became",
+      vision: "their VISION - where they're headed, what they're working toward"
+    },
+    engagement_guidance: %{
+      high: "User is highly engaged - lean in!",
+      medium: "User engagement is moderate - balance depth with accessibility.",
+      low: "User engagement is lower - keep it lighter.",
+      critical: "User seems ready to wrap up.",
+      default: "Adjust your approach based on the conversation flow."
+    },
+    frustration_guidance: %{
+      high: "CRITICAL: User is frustrated. Ask about something COMPLETELY DIFFERENT.",
+      moderate: "User seems a bit irritated. Pivot to a fresh topic.",
+      mild: "User may be getting impatient. Keep your question short.",
+      default: "Sentiment is neutral - proceed normally."
+    },
+    chronological_guidance: %{
+      forward: "User is talking about future/current work - RESPECT THIS MOMENTUM.",
+      backward: "User is discussing their past. Look for opportunities to bridge to the present/future.",
+      neutral: "No strong chronological preference - follow the natural flow of conversation."
+    }
+  }
 
   defstruct [
     :session_id,
@@ -39,7 +70,8 @@ defmodule InterviewStudio.Agents.Director do
     :questions_asked,       # Track questions to prevent repetition
     :frustration_level,     # Track user frustration from sentiment agent
     :user_intent,           # Semantic intent: :continue, :change_topic, :end_interview
-    :chronological_direction # Momentum preference: :forward, :backward, :neutral
+    :chronological_direction, # Momentum preference: :forward, :backward, :neutral
+    :config                 # Loaded configuration
   ]
 
   # Client API
@@ -97,6 +129,9 @@ defmodule InterviewStudio.Agents.Director do
     session_id = Keyword.fetch!(opts, :session_id)
     llm_config = Keyword.get(opts, :llm_config, default_llm_config())
 
+    # Load config from YAML, falling back to defaults
+    config = ConfigLoader.load_with_defaults(:director, @default_config)
+
     state = %__MODULE__{
       session_id: session_id,
       current_phase: :preparation,
@@ -114,7 +149,8 @@ defmodule InterviewStudio.Agents.Director do
       questions_asked: [],
       frustration_level: :none,
       user_intent: :continue,
-      chronological_direction: :neutral
+      chronological_direction: :neutral,
+      config: config
     }
 
     # Subscribe to relevant signals
@@ -921,39 +957,38 @@ defmodule InterviewStudio.Agents.Director do
     # Get interview memory from Scribe
     interview_memory = get_interview_memory(state.session_id)
 
+    # Load prompt template with variable substitution
+    variables = %{
+      current_phase: state.current_phase,
+      topics_explored: if(topics_explored == "", do: "none yet", else: topics_explored),
+      topics_remaining: if(topics_remaining == "", do: "none", else: topics_remaining),
+      questions_asked: questions_asked,
+      themes_text: themes_text,
+      interview_memory: interview_memory
+    }
+
+    PromptLoader.load_with_vars!("interview", "director", "system", variables, default_system_prompt(variables))
+  end
+
+  # Fallback system prompt if file not found
+  defp default_system_prompt(vars) do
     """
     You are a warm, skilled interviewer conducting a "Story of You" interview.
-    Your goal is to discover what makes this person unique and craft a compelling written piece about them - their background, journey, what drives them, and what sets them apart.
+    Your goal is to discover what makes this person unique.
 
-    CRITICAL INTERVIEW RULES:
-    1. NEVER repeat a question you've already asked, even rephrased
-    2. NEVER ask about something they've already told you - BUILD on what you learned
-    3. When someone gives a brief answer ("nope", "not really", a short sentence), ACCEPT IT and move to a new topic
-    4. Don't push for "deeper" answers - take what they give you and keep the conversation flowing
-    5. If they seem frustrated or say things like "I already answered that", immediately apologize briefly and move on
-    6. Your job is to gather their story, not to extract confessions - respect their boundaries
-
-    Interview Style:
-    - Be genuinely curious but not pushy
-    - Keep responses concise (1-2 sentences max)
-    - Be conversational, not formal
-    - Reference specific things they've shared from the INTERVIEW MEMORY below
-    - Move forward, don't circle back
-
-    Current phase: #{state.current_phase}
-    Topics explored: #{if topics_explored == "", do: "none yet", else: topics_explored}
-    Topics remaining: #{if topics_remaining == "", do: "none", else: topics_remaining}
+    Current phase: #{vars.current_phase}
+    Topics explored: #{vars.topics_explored}
+    Topics remaining: #{vars.topics_remaining}
 
     Questions you've already asked (DO NOT repeat these):
-    #{questions_asked}
+    #{vars.questions_asked}
 
     Themes discovered:
-    #{themes_text}
+    #{vars.themes_text}
 
-    #{interview_memory}
+    #{vars.interview_memory}
 
-    Always respond in first person as the interviewer. Never break character.
-    Use the INTERVIEW MEMORY above to reference specific things they've shared and avoid repetition.
+    Always respond in first person as the interviewer.
     """
   end
 
@@ -975,15 +1010,13 @@ defmodule InterviewStudio.Agents.Director do
   defp build_user_prompt(:ask, %{question: question}, state) do
     history = format_recent_history(state.conversation_history, 3)
 
-    """
-    Recent conversation:
-    #{history}
+    variables = %{
+      history: history,
+      question: question
+    }
 
-    Ask this question naturally, adapting it to flow from the conversation:
-    "#{question}"
-
-    Respond with just the question, naturally phrased.
-    """
+    PromptLoader.load_with_vars!("interview", "director", "ask", variables,
+      "Recent conversation:\n#{history}\n\nAsk this question naturally: \"#{question}\"\n\nRespond with just the question.")
   end
 
   # DYNAMIC QUESTION GENERATION - The heart of multi-agent collaboration
@@ -1000,10 +1033,10 @@ defmodule InterviewStudio.Agents.Director do
 
     themes_text = format_themes_for_prompt(themes)
     probes_text = format_probes_for_prompt(probes)
-    engagement_guidance = engagement_to_guidance(engagement)
-    frustration_guidance = frustration_to_guidance(frustration)
-    chronological_guidance = chronological_to_guidance(chronological_direction)
-    topic_description = topic_to_description(topic)
+    engagement_guidance = engagement_to_guidance(engagement, state.config)
+    frustration_guidance = frustration_to_guidance(frustration, state.config)
+    chronological_guidance = chronological_to_guidance(chronological_direction, state.config)
+    topic_description = topic_to_description(topic, state.config)
 
     # Check if this is from a topic change request
     topic_change_note = if context[:source] == :topic_change_request do
@@ -1012,48 +1045,34 @@ defmodule InterviewStudio.Agents.Director do
       ""
     end
 
+    variables = %{
+      history: history,
+      themes_text: themes_text,
+      probes_text: probes_text,
+      engagement: engagement,
+      engagement_guidance: engagement_guidance,
+      frustration: frustration,
+      frustration_guidance: frustration_guidance,
+      chronological_direction: chronological_direction,
+      chronological_guidance: chronological_guidance,
+      topic_change_note: topic_change_note,
+      topic_description: topic_description
+    }
+
+    PromptLoader.load_with_vars!("interview", "director", "dynamic_question", variables,
+      default_dynamic_question_prompt(variables))
+  end
+
+  # Fallback dynamic question prompt
+  defp default_dynamic_question_prompt(vars) do
     """
     Recent conversation:
-    #{history}
+    #{vars.history}
 
-    === MULTI-AGENT SYNTHESIS ===
+    Generate a question about: #{vars.topic_description}
 
-    THEMES DISCOVERED BY STORY ANALYST:
-    #{themes_text}
-
-    PROBE SUGGESTIONS FROM PROBE COACH:
-    #{probes_text}
-
-    ENGAGEMENT LEVEL: #{engagement}
-    #{engagement_guidance}
-
-    SENTIMENT STATUS: #{frustration}
-    #{frustration_guidance}
-
-    CHRONOLOGICAL MOMENTUM: #{chronological_direction}
-    #{chronological_guidance}
-    #{topic_change_note}
-
-    === YOUR TASK ===
-
-    Generate a question about: #{topic_description}
-
-    CRITICAL REQUIREMENTS:
-    1. CHECK THE INTERVIEW MEMORY in the system prompt - DO NOT ask about anything already covered
-    2. The question MUST reference specific details from what they've shared
-    3. If themes were discovered, weave them into your question
-    4. If probes were suggested, consider incorporating their insights
-    5. Match the question depth to the engagement AND sentiment level
-    6. DO NOT ask generic questions - be specific to what this person has shared
-    7. The question should feel like a natural continuation of the conversation
-    8. If sentiment shows ANY frustration, move to a COMPLETELY DIFFERENT topic
-    9. RESPECT THE CHRONOLOGICAL MOMENTUM - if they've moved forward in their story, don't pull them back to childhood/early days
-
-    BAD EXAMPLE (generic): "What drives you in your work?"
-    GOOD EXAMPLE (specific): "You mentioned your brother was the 'smart one' - I'm curious how that dynamic shaped your approach to building your company..."
-
-    REMEMBER: The system prompt contains KEY QUOTES and LEARNINGS from earlier in the interview.
-    Use these to craft questions that BUILD on what you've already learned, not repeat it.
+    Themes: #{vars.themes_text}
+    Engagement: #{vars.engagement}
 
     Respond with just the question, naturally phrased.
     """
@@ -1062,45 +1081,36 @@ defmodule InterviewStudio.Agents.Director do
   defp build_user_prompt(:probe, %{question: question, topic: topic}, state) do
     history = format_recent_history(state.conversation_history, 3)
 
-    """
-    Recent conversation:
-    #{history}
+    variables = %{
+      history: history,
+      topic: topic,
+      question: question
+    }
 
-    The user said something interesting about: #{topic}
-    Ask this follow-up question naturally:
-    "#{question}"
-
-    Respond with just the question, naturally phrased.
-    """
+    PromptLoader.load_with_vars!("interview", "director", "probe", variables,
+      "Recent conversation:\n#{history}\n\nThe user said something interesting about: #{topic}\nAsk this follow-up: \"#{question}\"")
   end
 
   defp build_user_prompt(:synthesize, %{themes: themes}, state) do
     history = format_recent_history(state.conversation_history, 5)
     theme_list = themes |> Enum.map(fn t -> t.theme end) |> Enum.join(", ")
 
-    """
-    Recent conversation:
-    #{history}
+    variables = %{
+      history: history,
+      theme_list: theme_list
+    }
 
-    Key themes discovered: #{theme_list}
-
-    Summarize what you've learned about this person in 2-3 sentences.
-    Ask if this captures their story well, or if they'd add anything.
-    """
+    PromptLoader.load_with_vars!("interview", "director", "synthesize", variables,
+      "Recent conversation:\n#{history}\n\nKey themes: #{theme_list}\n\nSummarize what you've learned in 2-3 sentences.")
   end
 
   defp build_user_prompt(:close, _context, state) do
     history = format_recent_history(state.conversation_history, 3)
 
-    """
-    Recent conversation:
-    #{history}
+    variables = %{history: history}
 
-    Thank them warmly for sharing their story.
-    Let them know you have everything you need.
-    Ask if there's anything else they'd like to add.
-    Keep it brief and genuine.
-    """
+    PromptLoader.load_with_vars!("interview", "director", "close", variables,
+      "Recent conversation:\n#{history}\n\nThank them warmly for sharing their story. Keep it brief and genuine.")
   end
 
   defp build_user_prompt(_action_type, _context, _state) do
@@ -1133,45 +1143,47 @@ defmodule InterviewStudio.Agents.Director do
     |> Enum.join("\n")
   end
 
-  defp engagement_to_guidance(:high) do
-    "User is highly engaged - lean in! Ask deeper, more probing questions. They're ready to share."
+  defp engagement_to_guidance(level, config) do
+    guidance_config = config[:engagement_guidance] || %{}
+    Map.get(guidance_config, level) || Map.get(guidance_config, :default) || default_engagement_guidance(level)
   end
-  defp engagement_to_guidance(:medium) do
-    "User engagement is moderate - balance depth with accessibility. Build on what's working."
-  end
-  defp engagement_to_guidance(:low) do
-    "User engagement is lower - keep it lighter. Consider shifting to a topic they might find more energizing."
-  end
-  defp engagement_to_guidance(:critical) do
-    "User seems ready to wrap up - respect their energy. Keep questions brief and consider transitioning."
-  end
-  defp engagement_to_guidance(_), do: "Adjust your approach based on the conversation flow."
 
-  defp frustration_to_guidance(:high) do
-    "CRITICAL: User is frustrated. Briefly acknowledge this ('I appreciate your patience') and ask about something COMPLETELY DIFFERENT. Do NOT revisit any previous topics."
-  end
-  defp frustration_to_guidance(:moderate) do
-    "User seems a bit irritated. Accept whatever they've shared, don't push for more depth, and pivot to a fresh topic they haven't discussed yet."
-  end
-  defp frustration_to_guidance(:mild) do
-    "User may be getting impatient. Keep your question short and move the conversation forward. Don't circle back."
-  end
-  defp frustration_to_guidance(_), do: "Sentiment is neutral - proceed normally."
+  defp default_engagement_guidance(:high), do: "User is highly engaged - lean in! Ask deeper, more probing questions."
+  defp default_engagement_guidance(:medium), do: "User engagement is moderate - balance depth with accessibility."
+  defp default_engagement_guidance(:low), do: "User engagement is lower - keep it lighter."
+  defp default_engagement_guidance(:critical), do: "User seems ready to wrap up - respect their energy."
+  defp default_engagement_guidance(_), do: "Adjust your approach based on the conversation flow."
 
-  defp chronological_to_guidance(:forward) do
-    "User is talking about future/current work - RESPECT THIS MOMENTUM. Ask about vision, goals, current projects. Do NOT pull them back to childhood or early years."
+  defp frustration_to_guidance(level, config) do
+    guidance_config = config[:frustration_guidance] || %{}
+    Map.get(guidance_config, level) || Map.get(guidance_config, :default) || default_frustration_guidance(level)
   end
-  defp chronological_to_guidance(:backward) do
-    "User is discussing their past. That's fine, but don't push further back than they've gone. Look for opportunities to bridge to the present/future."
-  end
-  defp chronological_to_guidance(_), do: "No strong chronological preference - follow the natural flow of conversation."
 
-  defp topic_to_description(:origin), do: "their ORIGIN STORY - their professional journey, how they got into this field, the path that led them here (NOT childhood - focus on career/professional beginnings)"
-  defp topic_to_description(:passion), do: "their PASSION - what drives them, what they care deeply about"
-  defp topic_to_description(:differentiation), do: "what makes them UNIQUE - their distinctive approach or perspective"
-  defp topic_to_description(:moments), do: "PIVOTAL MOMENTS - turning points that shaped who they became"
-  defp topic_to_description(:vision), do: "their VISION - where they're headed, what they're working toward"
-  defp topic_to_description(topic), do: "#{topic}"
+  defp default_frustration_guidance(:high), do: "CRITICAL: User is frustrated. Ask about something COMPLETELY DIFFERENT."
+  defp default_frustration_guidance(:moderate), do: "User seems a bit irritated. Pivot to a fresh topic."
+  defp default_frustration_guidance(:mild), do: "User may be getting impatient. Keep your question short."
+  defp default_frustration_guidance(_), do: "Sentiment is neutral - proceed normally."
+
+  defp chronological_to_guidance(direction, config) do
+    guidance_config = config[:chronological_guidance] || %{}
+    Map.get(guidance_config, direction) || Map.get(guidance_config, :neutral) || default_chronological_guidance(direction)
+  end
+
+  defp default_chronological_guidance(:forward), do: "User is talking about future/current work - RESPECT THIS MOMENTUM."
+  defp default_chronological_guidance(:backward), do: "User is discussing their past. Look for opportunities to bridge to the present/future."
+  defp default_chronological_guidance(_), do: "No strong chronological preference - follow the natural flow of conversation."
+
+  defp topic_to_description(topic, config) do
+    descriptions = config[:topic_descriptions] || %{}
+    Map.get(descriptions, topic) || default_topic_description(topic)
+  end
+
+  defp default_topic_description(:origin), do: "their ORIGIN STORY - their professional journey, how they got into this field"
+  defp default_topic_description(:passion), do: "their PASSION - what drives them, what they care deeply about"
+  defp default_topic_description(:differentiation), do: "what makes them UNIQUE - their distinctive approach or perspective"
+  defp default_topic_description(:moments), do: "PIVOTAL MOMENTS - turning points that shaped who they became"
+  defp default_topic_description(:vision), do: "their VISION - where they're headed, what they're working toward"
+  defp default_topic_description(topic), do: "#{topic}"
 
   defp format_recent_history(history, count) do
     history

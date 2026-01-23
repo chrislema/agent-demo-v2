@@ -1,0 +1,8 @@
+Recent conversation:
+{{history}}
+
+The user said something interesting about: {{topic}}
+Ask this follow-up question naturally:
+"{{question}}"
+
+Respond with just the question, naturally phrased.

@@ -1,0 +1,7 @@
+Recent conversation:
+{{history}}
+
+Key themes discovered: {{theme_list}}
+
+Summarize what you've learned about this person in 2-3 sentences.
+Ask if this captures their story well, or if they'd add anything.

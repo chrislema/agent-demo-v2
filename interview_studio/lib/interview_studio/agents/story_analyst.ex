@@ -15,6 +15,7 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
   require Logger
 
   alias InterviewStudio.InterviewBus
+  alias InterviewStudio.PromptLoader
 
   defstruct [
     :session_id,
@@ -282,35 +283,40 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
       ""
     end
 
-    prompt = """
-    Analyze this interview conversation for narrative themes and patterns.
-
-    Conversation:
-    #{conversation}
-
-    Already identified themes: #{if existing_themes == "", do: "none yet", else: existing_themes}#{probe_context}
-
-    Identify:
-    1. NEW themes (don't repeat existing ones) - core values, motivations, defining characteristics
-    2. Story patterns - arcs like struggle→growth, passion→profession
-
-    Respond in this exact format (JSON):
-    {
-      "themes": [
-        {"theme": "theme name", "evidence": "quote or observation", "confidence": 0.8}
-      ],
-      "patterns": [
-        {"pattern": "pattern description", "instances": ["example1", "example2"]}
-      ]
+    variables = %{
+      conversation: conversation,
+      existing_themes: if(existing_themes == "", do: "none yet", else: existing_themes),
+      probe_context: probe_context
     }
 
-    Only include genuinely new insights. Return empty arrays if nothing new.
-    """
+    prompt = PromptLoader.load_with_vars!("interview", "story_analyst", "analysis", variables,
+      default_analysis_prompt(variables))
 
     case call_llm(prompt, state.llm_config) do
       {:ok, response} -> parse_analysis(response)
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  # Fallback analysis prompt
+  defp default_analysis_prompt(vars) do
+    """
+    Analyze this interview conversation for narrative themes and patterns.
+
+    Conversation:
+    #{vars.conversation}
+
+    Already identified themes: #{vars.existing_themes}#{vars.probe_context}
+
+    Identify:
+    1. NEW themes (don't repeat existing ones) - core values, motivations, defining characteristics
+    2. Story patterns - arcs like struggle→growth, passion→profession
+
+    Respond in JSON format:
+    {"themes": [{"theme": "name", "evidence": "quote", "confidence": 0.8}], "patterns": [{"pattern": "description", "instances": ["example"]}]}
+
+    Only include genuinely new insights.
+    """
   end
 
   defp parse_analysis(response) do

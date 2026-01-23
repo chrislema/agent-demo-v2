@@ -1,0 +1,78 @@
+# Director Agent Configuration
+# Domain-specific settings for interview orchestration
+
+# Topic descriptions for dynamic question generation
+topic_descriptions:
+  origin: "their ORIGIN STORY - their professional journey, how they got into this field, the path that led them here (NOT childhood - focus on career/professional beginnings)"
+  passion: "their PASSION - what drives them, what they care deeply about"
+  differentiation: "what makes them UNIQUE - their distinctive approach or perspective"
+  moments: "PIVOTAL MOMENTS - turning points that shaped who they became"
+  vision: "their VISION - where they're headed, what they're working toward"
+
+# Keywords for theme-to-topic mapping
+topic_keywords:
+  origin:
+    - "background"
+    - "start"
+    - "began"
+    - "journey"
+    - "path"
+    - "career"
+    - "how you got here"
+    - "first job"
+    - "started out"
+  passion:
+    - "love"
+    - "passion"
+    - "drive"
+    - "motivate"
+    - "care about"
+    - "excited"
+    - "energy"
+    - "fulfilling"
+  differentiation:
+    - "unique"
+    - "different"
+    - "approach"
+    - "perspective"
+    - "style"
+    - "stand out"
+    - "special"
+  moments:
+    - "moment"
+    - "turning point"
+    - "pivotal"
+    - "changed"
+    - "realized"
+    - "breakthrough"
+    - "milestone"
+  vision:
+    - "future"
+    - "goal"
+    - "vision"
+    - "next"
+    - "working toward"
+    - "dream"
+    - "aspiration"
+    - "building"
+
+# Engagement level guidance
+engagement_guidance:
+  high: "User is highly engaged - lean in! Ask deeper, more probing questions. They're ready to share."
+  medium: "User engagement is moderate - balance depth with accessibility. Build on what's working."
+  low: "User engagement is lower - keep it lighter. Consider shifting to a topic they might find more energizing."
+  critical: "User seems ready to wrap up - respect their energy. Keep questions brief and consider transitioning."
+  default: "Adjust your approach based on the conversation flow."
+
+# Frustration level guidance
+frustration_guidance:
+  high: "CRITICAL: User is frustrated. Briefly acknowledge this ('I appreciate your patience') and ask about something COMPLETELY DIFFERENT. Do NOT revisit any previous topics."
+  moderate: "User seems a bit irritated. Accept whatever they've shared, don't push for more depth, and pivot to a fresh topic they haven't discussed yet."
+  mild: "User may be getting impatient. Keep your question short and move the conversation forward. Don't circle back."
+  default: "Sentiment is neutral - proceed normally."
+
+# Chronological direction guidance
+chronological_guidance:
+  forward: "User is talking about future/current work - RESPECT THIS MOMENTUM. Ask about vision, goals, current projects. Do NOT pull them back to childhood or early years."
+  backward: "User is discussing their past. That's fine, but don't push further back than they've gone. Look for opportunities to bridge to the present/future."
+  neutral: "No strong chronological preference - follow the natural flow of conversation."

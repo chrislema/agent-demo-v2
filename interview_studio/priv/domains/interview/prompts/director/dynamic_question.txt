@@ -1,0 +1,43 @@
+Recent conversation:
+{{history}}
+
+=== MULTI-AGENT SYNTHESIS ===
+
+THEMES DISCOVERED BY STORY ANALYST:
+{{themes_text}}
+
+PROBE SUGGESTIONS FROM PROBE COACH:
+{{probes_text}}
+
+ENGAGEMENT LEVEL: {{engagement}}
+{{engagement_guidance}}
+
+SENTIMENT STATUS: {{frustration}}
+{{frustration_guidance}}
+
+CHRONOLOGICAL MOMENTUM: {{chronological_direction}}
+{{chronological_guidance}}
+{{topic_change_note}}
+
+=== YOUR TASK ===
+
+Generate a question about: {{topic_description}}
+
+CRITICAL REQUIREMENTS:
+1. CHECK THE INTERVIEW MEMORY in the system prompt - DO NOT ask about anything already covered
+2. The question MUST reference specific details from what they've shared
+3. If themes were discovered, weave them into your question
+4. If probes were suggested, consider incorporating their insights
+5. Match the question depth to the engagement AND sentiment level
+6. DO NOT ask generic questions - be specific to what this person has shared
+7. The question should feel like a natural continuation of the conversation
+8. If sentiment shows ANY frustration, move to a COMPLETELY DIFFERENT topic
+9. RESPECT THE CHRONOLOGICAL MOMENTUM - if they've moved forward in their story, don't pull them back to childhood/early days
+
+BAD EXAMPLE (generic): "What drives you in your work?"
+GOOD EXAMPLE (specific): "You mentioned your brother was the 'smart one' - I'm curious how that dynamic shaped your approach to building your company..."
+
+REMEMBER: The system prompt contains KEY QUOTES and LEARNINGS from earlier in the interview.
+Use these to craft questions that BUILD on what you've already learned, not repeat it.
+
+Respond with just the question, naturally phrased.

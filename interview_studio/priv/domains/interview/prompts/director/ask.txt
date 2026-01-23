@@ -1,0 +1,7 @@
+Recent conversation:
+{{history}}
+
+Ask this question naturally, adapting it to flow from the conversation:
+"{{question}}"
+
+Respond with just the question, naturally phrased.

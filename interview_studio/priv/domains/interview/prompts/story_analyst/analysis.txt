@@ -1,0 +1,22 @@
+Analyze this interview conversation for narrative themes and patterns.
+
+Conversation:
+{{conversation}}
+
+Already identified themes: {{existing_themes}}{{probe_context}}
+
+Identify:
+1. NEW themes (don't repeat existing ones) - core values, motivations, defining characteristics
+2. Story patterns - arcs like struggle→growth, passion→profession
+
+Respond in this exact format (JSON):
+{
+  "themes": [
+    {"theme": "theme name", "evidence": "quote or observation", "confidence": 0.8}
+  ],
+  "patterns": [
+    {"pattern": "pattern description", "instances": ["example1", "example2"]}
+  ]
+}
+
+Only include genuinely new insights. Return empty arrays if nothing new.

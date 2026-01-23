@@ -1,0 +1,16 @@
+A theme has been identified in an interview: "{{theme}}"
+Evidence: {{evidence}}
+
+Generate ONE follow-up question that explores this theme more deeply.
+The question should:
+1. Connect to the theme naturally
+2. Invite the person to share more about how this theme shows up in their life
+3. Be specific, not generic
+
+Respond in JSON:
+{
+  "topic": "theme exploration: {{theme}}",
+  "rationale": "why this theme deserves deeper exploration",
+  "question": "the follow-up question",
+  "priority": "medium"
+}

@@ -1,0 +1,24 @@
+Analyze this interview response and suggest follow-up probes.
+
+User said: "{{content}}"
+
+Look for:
+1. Emotional language that deserves exploration
+2. Vague statements needing specifics
+3. Interesting tangents worth pursuing
+4. Contradictions or tensions
+
+Respond in this exact JSON format:
+{
+  "probes": [
+    {
+      "topic": "what the probe is about",
+      "rationale": "why this is worth exploring",
+      "question": "the suggested follow-up question",
+      "priority": "high|medium|low"
+    }
+  ]
+}
+
+Only suggest 1-2 probes maximum. Only suggest if there's genuine depth to explore.
+Return empty probes array if nothing stands out.

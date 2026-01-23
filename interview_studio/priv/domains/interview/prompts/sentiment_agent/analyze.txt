@@ -1,0 +1,20 @@
+Analyze this interview response for sentiment and intent.
+
+User said: "{{message}}"
+
+Determine:
+1. frustration_level: none | mild | moderate | high
+2. user_intent: continue | change_topic | end_interview
+3. chronological_direction: forward | backward | neutral
+
+Guidelines:
+- "Can we move on" or "let's move on" = change_topic (NOT end_interview, NOT frustration)
+- "I don't want to talk about X" = change_topic (NOT end_interview)
+- "Let's wrap up" or "I'm done" or "let's end" = end_interview
+- Short answers alone are NOT frustration - only explicit irritation is frustration
+- "already told you" or "I already said" = mild/moderate frustration
+- Talking about future/career/goals/vision = forward
+- Talking about childhood/early years/growing up = backward
+- Most responses are neutral chronologically
+
+Respond with ONLY the JSON, no other text.

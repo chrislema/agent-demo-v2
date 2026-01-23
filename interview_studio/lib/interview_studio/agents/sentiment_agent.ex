@@ -14,6 +14,7 @@ defmodule InterviewStudio.Agents.SentimentAgent do
   require Logger
 
   alias InterviewStudio.InterviewBus
+  alias InterviewStudio.PromptLoader
 
   defstruct [
     :session_id,
@@ -239,40 +240,12 @@ defmodule InterviewStudio.Agents.SentimentAgent do
 
   # Call LLM for semantic sentiment analysis
   defp call_sentiment_llm(message, config) do
-    system_prompt = """
-    You are a sentiment analyzer for interview conversations. Analyze the user's message and determine their emotional state and intent.
+    system_prompt = PromptLoader.load!("interview", "sentiment_agent", "system",
+      default_sentiment_system_prompt())
 
-    Respond ONLY with valid JSON in this exact format:
-    {"frustration_level": "none", "user_intent": "continue", "chronological_direction": "neutral"}
-
-    Valid values:
-    - frustration_level: "none", "mild", "moderate", "high"
-    - user_intent: "continue", "change_topic", "end_interview"
-    - chronological_direction: "forward", "backward", "neutral"
-    """
-
-    user_prompt = """
-    Analyze this interview response for sentiment and intent.
-
-    User said: "#{message}"
-
-    Determine:
-    1. frustration_level: none | mild | moderate | high
-    2. user_intent: continue | change_topic | end_interview
-    3. chronological_direction: forward | backward | neutral
-
-    Guidelines:
-    - "Can we move on" or "let's move on" = change_topic (NOT end_interview, NOT frustration)
-    - "I don't want to talk about X" = change_topic (NOT end_interview)
-    - "Let's wrap up" or "I'm done" or "let's end" = end_interview
-    - Short answers alone are NOT frustration - only explicit irritation is frustration
-    - "already told you" or "I already said" = mild/moderate frustration
-    - Talking about future/career/goals/vision = forward
-    - Talking about childhood/early years/growing up = backward
-    - Most responses are neutral chronologically
-
-    Respond with ONLY the JSON, no other text.
-    """
+    variables = %{message: message}
+    user_prompt = PromptLoader.load_with_vars!("interview", "sentiment_agent", "analyze", variables,
+      default_sentiment_analyze_prompt(message))
 
     try do
       api_key = System.get_env("AgentDemo_Groq_API_Key") || ""
@@ -308,6 +281,23 @@ defmodule InterviewStudio.Agents.SentimentAgent do
         Logger.error("[SentimentAgent] LLM call failed: #{inspect(e)}")
         {:error, "LLM call failed"}
     end
+  end
+
+  # Fallback system prompt
+  defp default_sentiment_system_prompt do
+    """
+    You are a sentiment analyzer for interview conversations.
+    Respond ONLY with valid JSON: {"frustration_level": "none", "user_intent": "continue", "chronological_direction": "neutral"}
+    """
+  end
+
+  # Fallback analyze prompt
+  defp default_sentiment_analyze_prompt(message) do
+    """
+    Analyze this interview response for sentiment and intent.
+    User said: "#{message}"
+    Respond with ONLY JSON: {"frustration_level": "none|mild|moderate|high", "user_intent": "continue|change_topic|end_interview", "chronological_direction": "forward|backward|neutral"}
+    """
   end
 
   # Parse JSON response from LLM
