@@ -311,6 +311,29 @@ defmodule InterviewStudio.Session do
     end
   end
 
+  # DYNAMIC QUESTION - Generated from collective agent intelligence
+  # This is where multi-agent collaboration produces emergent questions
+  defp handle_action(session_id, %{type: :ask_dynamic} = action) do
+    # Pass all context to Director for dynamic generation
+    context = Map.take(action, [:topic, :themes, :probes, :engagement, :source])
+
+    Logger.debug("[Session] Generating dynamic question for topic: #{action.topic}")
+
+    case Director.generate_response(session_id, :ask_dynamic, context) do
+      {:ok, response} ->
+        Director.record_host_message(session_id, response)
+        publish_host_utterance(response, action, session_id)
+        {:ok, response}
+      {:error, reason} ->
+        # Fallback: generate a basic question for the topic
+        Logger.warning("[Session] Dynamic generation failed: #{inspect(reason)}, using fallback")
+        fallback = generate_topic_fallback(action.topic)
+        Director.record_host_message(session_id, fallback)
+        publish_host_utterance(fallback, action, session_id)
+        {:ok, fallback}
+    end
+  end
+
   defp handle_action(session_id, %{type: :probe, question: question, topic: topic}) do
     context = %{question: question, topic: topic}
 
@@ -382,5 +405,25 @@ defmodule InterviewStudio.Session do
 
   defp generate_session_id do
     :crypto.strong_rand_bytes(8) |> Base.url_encode64(padding: false)
+  end
+
+  # Fallback questions when dynamic generation fails
+  defp generate_topic_fallback(:origin) do
+    "I'd love to hear about your background - how did you get to where you are today?"
+  end
+  defp generate_topic_fallback(:passion) do
+    "What drives you? What are you most passionate about in your work?"
+  end
+  defp generate_topic_fallback(:differentiation) do
+    "What would you say makes your approach or perspective unique?"
+  end
+  defp generate_topic_fallback(:moments) do
+    "Was there a pivotal moment or turning point that really shaped who you've become?"
+  end
+  defp generate_topic_fallback(:vision) do
+    "Where are you headed? What's the vision you're working toward?"
+  end
+  defp generate_topic_fallback(_topic) do
+    "Tell me more about that - I'd love to hear your thoughts."
   end
 end

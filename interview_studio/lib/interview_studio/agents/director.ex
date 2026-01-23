@@ -25,8 +25,8 @@ defmodule InterviewStudio.Agents.Director do
   defstruct [
     :session_id,
     :current_phase,
-    :questions_asked,
-    :questions_remaining,
+    :topics_explored,       # Categories/topics we've covered
+    :topics_to_explore,     # Categories/topics still to explore
     :active_themes,
     :pending_probes,
     :engagement_level,
@@ -34,7 +34,8 @@ defmodule InterviewStudio.Agents.Director do
     :last_user_message,
     :llm_config,
     :synthesis_delivered,
-    :user_responded_to_synthesis
+    :user_responded_to_synthesis,
+    :last_insights          # Most recent insights from parallel analysis
   ]
 
   # Client API
@@ -78,8 +79,8 @@ defmodule InterviewStudio.Agents.Director do
     state = %__MODULE__{
       session_id: session_id,
       current_phase: :preparation,
-      questions_asked: [],
-      questions_remaining: Phases.questions(:core_questions),
+      topics_explored: [],
+      topics_to_explore: Phases.core_categories(),  # [:origin, :passion, :differentiation, :moments, :vision]
       active_themes: [],
       pending_probes: [],
       engagement_level: :high,
@@ -87,7 +88,8 @@ defmodule InterviewStudio.Agents.Director do
       last_user_message: nil,
       llm_config: llm_config,
       synthesis_delivered: false,
-      user_responded_to_synthesis: false
+      user_responded_to_synthesis: false,
+      last_insights: %{}
     }
 
     # Subscribe to relevant signals
@@ -178,7 +180,8 @@ defmodule InterviewStudio.Agents.Director do
     %{state |
       active_themes: merged_themes,
       pending_probes: merged_probes,
-      engagement_level: engagement_level
+      engagement_level: engagement_level,
+      last_insights: insights  # Store for dynamic question generation
     }
   end
 
@@ -426,43 +429,112 @@ defmodule InterviewStudio.Agents.Director do
   end
 
   defp decide_core_questions_action(state) do
-    # Check if we have high-priority probes
+    # Check if we have high-priority probes from Probe Coach
     high_probe = Enum.find(state.pending_probes, fn p -> p.priority == :high end)
 
     cond do
-      # High-priority probe - insert it
+      # High-priority probe from Probe Coach - insert it (agent collaboration!)
       high_probe != nil ->
         %{
           type: :probe,
           question: high_probe.question,
-          topic: high_probe.topic
+          topic: high_probe.topic,
+          source: :probe_coach
         }
 
-      # More questions remaining
-      state.questions_remaining != [] ->
-        [next | _rest] = state.questions_remaining
+      # More topics to explore - generate dynamic question
+      state.topics_to_explore != [] ->
+        # Pick next topic, considering themes and engagement
+        next_topic = select_next_topic(state)
+
         %{
-          type: :ask,
-          question: next.text,
-          question_id: next.id,
-          source: :question_bank
+          type: :ask_dynamic,
+          topic: next_topic,
+          themes: state.active_themes,
+          probes: state.pending_probes,
+          engagement: state.engagement_level,
+          source: :collective_intelligence
         }
 
-      # All questions done - transition to probing or synthesis
+      # All topics covered - transition to probing or synthesis
       state.pending_probes != [] ->
         %{
           type: :transition,
           to_phase: :probing,
-          reason: "Core questions complete, probes pending"
+          reason: "Core topics explored, probes pending"
         }
 
       true ->
         %{
           type: :transition,
           to_phase: :synthesis,
-          reason: "Core questions complete"
+          reason: "Core topics explored"
         }
     end
+  end
+
+  # Select the next topic to explore based on collective intelligence
+  defp select_next_topic(state) do
+    remaining = state.topics_to_explore
+
+    # If we have themes that relate to a remaining topic, prioritize that
+    theme_suggested_topic = find_theme_related_topic(state.active_themes, remaining)
+
+    # If we have probes that relate to a topic, consider that
+    probe_suggested_topic = find_probe_related_topic(state.pending_probes, remaining)
+
+    cond do
+      # Theme suggests a topic - explore that thread
+      theme_suggested_topic != nil ->
+        Logger.debug("[Director] Theme-guided topic selection: #{theme_suggested_topic}")
+        theme_suggested_topic
+
+      # Probe suggests a topic - follow that lead
+      probe_suggested_topic != nil ->
+        Logger.debug("[Director] Probe-guided topic selection: #{probe_suggested_topic}")
+        probe_suggested_topic
+
+      # Default: follow natural interview flow
+      true ->
+        hd(remaining)
+    end
+  end
+
+  defp find_theme_related_topic(themes, remaining_topics) do
+    # Map themes to related topics
+    topic_keywords = %{
+      origin: ["background", "start", "began", "grew up", "childhood", "early"],
+      passion: ["love", "passion", "drive", "motivate", "care about", "excited"],
+      differentiation: ["unique", "different", "approach", "perspective", "style"],
+      moments: ["moment", "turning point", "pivotal", "changed", "realized"],
+      vision: ["future", "goal", "vision", "next", "working toward", "dream"]
+    }
+
+    Enum.find(remaining_topics, fn topic ->
+      keywords = Map.get(topic_keywords, topic, [])
+      Enum.any?(themes, fn theme ->
+        theme_text = (theme[:theme] || theme.theme || "") |> String.downcase()
+        Enum.any?(keywords, fn kw -> String.contains?(theme_text, kw) end)
+      end)
+    end)
+  end
+
+  defp find_probe_related_topic(probes, remaining_topics) do
+    topic_keywords = %{
+      origin: ["background", "start", "how", "where"],
+      passion: ["why", "love", "passion", "drive"],
+      differentiation: ["unique", "different", "approach"],
+      moments: ["when", "moment", "turning", "pivotal"],
+      vision: ["future", "goal", "next", "plan"]
+    }
+
+    Enum.find(remaining_topics, fn topic ->
+      keywords = Map.get(topic_keywords, topic, [])
+      Enum.any?(probes, fn probe ->
+        probe_text = (probe[:topic] || probe.topic || "") |> String.downcase()
+        Enum.any?(keywords, fn kw -> String.contains?(probe_text, kw) end)
+      end)
+    end)
   end
 
   defp decide_probing_action(state) do
@@ -495,15 +567,16 @@ defmodule InterviewStudio.Agents.Director do
 
   # State updates based on actions
 
-  defp apply_action_to_state(%{type: :ask, question_id: question_id} = action, state) when not is_nil(question_id) do
-    # Mark question as asked and remove from remaining
-    asked = [action | state.questions_asked]
-    remaining = Enum.reject(state.questions_remaining, fn q -> q.id == question_id end)
-    %{state | questions_asked: asked, questions_remaining: remaining}
+  defp apply_action_to_state(%{type: :ask_dynamic, topic: topic} = action, state) do
+    # Dynamic question - mark topic as explored
+    explored = [topic | state.topics_explored]
+    remaining = Enum.reject(state.topics_to_explore, fn t -> t == topic end)
+    Logger.debug("[Director] Topic explored: #{topic}, remaining: #{inspect(remaining)}")
+    %{state | topics_explored: explored, topics_to_explore: remaining}
   end
 
   defp apply_action_to_state(%{type: :ask}, state) do
-    # Opening question or question without ID - just track it was asked
+    # Opening question or scripted question - just track it
     state
   end
 
@@ -564,9 +637,15 @@ defmodule InterviewStudio.Agents.Director do
       [] -> "No themes identified yet."
       themes ->
         themes
-        |> Enum.map(fn t -> "- #{t.theme}" end)
+        |> Enum.map(fn t ->
+          theme = t[:theme] || t.theme || "unknown"
+          "- #{theme}"
+        end)
         |> Enum.join("\n")
     end
+
+    topics_explored = state.topics_explored |> Enum.map(&Atom.to_string/1) |> Enum.join(", ")
+    topics_remaining = state.topics_to_explore |> Enum.map(&Atom.to_string/1) |> Enum.join(", ")
 
     """
     You are a warm, skilled interviewer conducting a "Story of You" interview.
@@ -578,10 +657,13 @@ defmodule InterviewStudio.Agents.Director do
     - Acknowledge and validate what they share
     - Keep responses concise (2-3 sentences max)
     - Be conversational, not formal
+    - NEVER ask generic questions - always reference specific things they've shared
 
     Current phase: #{state.current_phase}
-    Questions asked: #{length(state.questions_asked)}
-    Themes discovered:
+    Topics explored: #{if topics_explored == "", do: "none yet", else: topics_explored}
+    Topics remaining: #{if topics_remaining == "", do: "none", else: topics_remaining}
+
+    Themes discovered by Story Analyst:
     #{themes_text}
 
     Always respond in first person as the interviewer. Never break character.
@@ -601,6 +683,101 @@ defmodule InterviewStudio.Agents.Director do
     Respond with just the question, naturally phrased.
     """
   end
+
+  # DYNAMIC QUESTION GENERATION - The heart of multi-agent collaboration
+  # This prompt synthesizes inputs from all observer agents to generate
+  # contextually relevant questions that emerge from collective intelligence
+  defp build_user_prompt(:ask_dynamic, context, state) do
+    history = format_recent_history(state.conversation_history, 5)
+    topic = context[:topic] || context.topic
+    themes = context[:themes] || context.themes || []
+    probes = context[:probes] || context.probes || []
+    engagement = context[:engagement] || context.engagement || :medium
+
+    themes_text = format_themes_for_prompt(themes)
+    probes_text = format_probes_for_prompt(probes)
+    engagement_guidance = engagement_to_guidance(engagement)
+    topic_description = topic_to_description(topic)
+
+    """
+    Recent conversation:
+    #{history}
+
+    === MULTI-AGENT SYNTHESIS ===
+
+    THEMES DISCOVERED BY STORY ANALYST:
+    #{themes_text}
+
+    PROBE SUGGESTIONS FROM PROBE COACH:
+    #{probes_text}
+
+    ENGAGEMENT LEVEL: #{engagement}
+    #{engagement_guidance}
+
+    === YOUR TASK ===
+
+    Generate a question about: #{topic_description}
+
+    CRITICAL REQUIREMENTS:
+    1. The question MUST reference specific details from the conversation
+    2. If themes were discovered, weave them into your question
+    3. If probes were suggested, consider incorporating their insights
+    4. Match the question depth to the engagement level
+    5. DO NOT ask generic questions - be specific to what this person has shared
+    6. The question should feel like a natural continuation of the conversation
+
+    BAD EXAMPLE (generic): "What drives you in your work?"
+    GOOD EXAMPLE (specific): "You mentioned your brother was the 'smart one' - I'm curious how that dynamic shaped your approach to building your company..."
+
+    Respond with just the question, naturally phrased.
+    """
+  end
+
+  defp format_themes_for_prompt([]), do: "No themes identified yet - this is early in the conversation."
+  defp format_themes_for_prompt(themes) do
+    themes
+    |> Enum.take(5)
+    |> Enum.map(fn t ->
+      theme = t[:theme] || t.theme || "unknown"
+      evidence = t[:evidence] || t.evidence || ""
+      "- #{theme}" <> if(evidence != "", do: " (evidence: #{String.slice(evidence, 0, 100)})", else: "")
+    end)
+    |> Enum.join("\n")
+  end
+
+  defp format_probes_for_prompt([]), do: "No specific probes suggested yet."
+  defp format_probes_for_prompt(probes) do
+    probes
+    |> Enum.take(3)
+    |> Enum.map(fn p ->
+      topic = p[:topic] || p.topic || "unknown"
+      rationale = p[:rationale] || p.rationale || ""
+      priority = p[:priority] || p.priority || :medium
+      "- [#{priority}] #{topic}" <> if(rationale != "", do: ": #{rationale}", else: "")
+    end)
+    |> Enum.join("\n")
+  end
+
+  defp engagement_to_guidance(:high) do
+    "User is highly engaged - lean in! Ask deeper, more probing questions. They're ready to share."
+  end
+  defp engagement_to_guidance(:medium) do
+    "User engagement is moderate - balance depth with accessibility. Build on what's working."
+  end
+  defp engagement_to_guidance(:low) do
+    "User engagement is lower - keep it lighter. Consider shifting to a topic they might find more energizing."
+  end
+  defp engagement_to_guidance(:critical) do
+    "User seems ready to wrap up - respect their energy. Keep questions brief and consider transitioning."
+  end
+  defp engagement_to_guidance(_), do: "Adjust your approach based on the conversation flow."
+
+  defp topic_to_description(:origin), do: "their ORIGIN STORY - background, how they got started, where they came from"
+  defp topic_to_description(:passion), do: "their PASSION - what drives them, what they care deeply about"
+  defp topic_to_description(:differentiation), do: "what makes them UNIQUE - their distinctive approach or perspective"
+  defp topic_to_description(:moments), do: "PIVOTAL MOMENTS - turning points that shaped who they became"
+  defp topic_to_description(:vision), do: "their VISION - where they're headed, what they're working toward"
+  defp topic_to_description(topic), do: "#{topic}"
 
   defp build_user_prompt(:probe, %{question: question, topic: topic}, state) do
     history = format_recent_history(state.conversation_history, 3)

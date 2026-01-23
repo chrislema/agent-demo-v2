@@ -61,7 +61,7 @@ This file tracks implementation tasks for transforming the Interview Studio from
 ## Phase 2: Dynamic Question Generation
 
 ### 2.1 Remove Static Question Bank Dependency
-- [ ] **Task:** Refactor Director to not rely on static question bank for core questions
+- [x] **Task:** Refactor Director to not rely on static question bank for core questions
 - **Acceptance Criteria:**
   - Director no longer picks questions from `Phases.questions/1` during core_questions phase
   - Question bank retained only as fallback/inspiration
@@ -73,7 +73,7 @@ This file tracks implementation tasks for transforming the Interview Studio from
   ```
 
 ### 2.2 Dynamic Question Generation Prompt
-- [ ] **Task:** Create LLM prompt that generates questions from collective insights
+- [x] **Task:** Create LLM prompt that generates questions from collective insights
 - **Acceptance Criteria:**
   - Prompt includes: conversation history, discovered themes, probe suggestions, engagement level, phase goals
   - Question emerges from synthesis of all inputs
@@ -87,7 +87,7 @@ This file tracks implementation tasks for transforming the Interview Studio from
   ```
 
 ### 2.3 Context-Aware Question Adaptation
-- [ ] **Task:** Implement question adaptation based on engagement level
+- [x] **Task:** Implement question adaptation based on engagement level
 - **Acceptance Criteria:**
   - High engagement: Ask deeper, more probing questions
   - Medium engagement: Balanced questions maintaining flow
@@ -377,7 +377,7 @@ This file tracks implementation tasks for transforming the Interview Studio from
 | Phase | Tasks | Complete |
 |-------|-------|----------|
 | 1. Parallel Analysis | 3 | 3/3 |
-| 2. Dynamic Questions | 3 | 0/3 |
+| 2. Dynamic Questions | 3 | 3/3 |
 | 3. Agent Communication | 4 | 0/4 |
 | 4. Consensus Mechanisms | 3 | 0/3 |
 | 5. UI Visibility | 4 | 0/4 |
