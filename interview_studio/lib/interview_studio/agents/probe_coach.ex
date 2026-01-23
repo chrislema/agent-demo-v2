@@ -50,6 +50,15 @@ defmodule InterviewStudio.Agents.ProbeCoach do
     GenServer.call(via_tuple(session_id), :analyze_now, 10_000)
   end
 
+  @doc """
+  Vote on readiness for a phase transition.
+  Used by Director.poll_transition_readiness/2 for consensus-based phase transitions.
+  Returns {:ready | :not_ready | :abstain, rationale}
+  """
+  def vote_transition(session_id, target_phase) do
+    GenServer.call(via_tuple(session_id), {:vote_transition, target_phase}, 5_000)
+  end
+
   # Server Callbacks
 
   @impl true
@@ -81,6 +90,15 @@ defmodule InterviewStudio.Agents.ProbeCoach do
   @impl true
   def handle_call(:get_pending_probes, _from, state) do
     {:reply, state.pending_probes, state}
+  end
+
+  @impl true
+  def handle_call({:vote_transition, target_phase}, _from, state) do
+    # CONSENSUS MECHANISM: Vote on phase transition readiness
+    # Probe Coach considers whether pending probes have been addressed
+    vote = evaluate_transition_readiness(target_phase, state)
+    Logger.debug("[ProbeCoach] Voting on transition to #{target_phase}: #{elem(vote, 0)}")
+    {:reply, vote, state}
   end
 
   @impl true
@@ -508,5 +526,56 @@ defmodule InterviewStudio.Agents.ProbeCoach do
       model: "meta-llama/llama-4-scout-17b-16e-instruct",
       temperature: 0.4
     }
+  end
+
+  # CONSENSUS MECHANISM: Evaluate readiness for phase transition
+  # Returns {:ready | :not_ready | :abstain, rationale}
+  defp evaluate_transition_readiness(target_phase, state) do
+    pending_count = length(state.pending_probes)
+    used_count = length(state.used_probes)
+    high_priority_probes = Enum.filter(state.pending_probes, fn p -> p.priority in [:high, :urgent] end)
+
+    case target_phase do
+      :synthesis ->
+        # For synthesis, consider whether important probes have been explored
+        cond do
+          high_priority_probes != [] ->
+            {:not_ready, "#{length(high_priority_probes)} high-priority probes still pending"}
+          pending_count > 3 ->
+            {:not_ready, "Many probes (#{pending_count}) still unexplored"}
+          used_count >= 2 or pending_count == 0 ->
+            {:ready, "Probing complete - #{used_count} probes explored"}
+          pending_count <= 2 ->
+            {:ready, "Only #{pending_count} low-priority probes remaining - okay to proceed"}
+          true ->
+            {:abstain, "Neutral on synthesis timing"}
+        end
+
+      :closing ->
+        # For closing, if engagement is critical, defer to that signal
+        if state.engagement_level == :critical do
+          {:ready, "Engagement is critical - support closing"}
+        else
+          if high_priority_probes != [] do
+            {:not_ready, "Would prefer to explore high-priority probes before closing"}
+          else
+            {:ready, "No critical probes remaining - ready to close"}
+          end
+        end
+
+      :probing ->
+        # We should have probes to explore before entering probing phase
+        if pending_count > 0 do
+          {:ready, "Have #{pending_count} probes ready to explore"}
+        else
+          {:not_ready, "No probes to explore - skip probing phase"}
+        end
+
+      :core_questions ->
+        {:ready, "Ready to identify probe opportunities during core questions"}
+
+      _ ->
+        {:abstain, "No specific readiness criteria for #{target_phase}"}
+    end
   end
 end

@@ -69,6 +69,23 @@ defmodule InterviewStudio.Agents.Director do
     GenServer.call(via_tuple(session_id), {:host_message, message})
   end
 
+  @doc """
+  Poll all observer agents for their vote on transitioning to a new phase.
+  Returns a map of agent votes: %{agent_name: {:ready | :not_ready | :abstain, rationale}}
+  Used for consensus-based phase transitions.
+  """
+  def poll_transition_readiness(session_id, target_phase) do
+    GenServer.call(via_tuple(session_id), {:poll_transition, target_phase}, 10_000)
+  end
+
+  @doc """
+  Check if there's consensus for a phase transition based on agent votes.
+  Returns {:consensus, votes} or {:no_consensus, votes}
+  """
+  def check_transition_consensus(session_id, target_phase) do
+    GenServer.call(via_tuple(session_id), {:check_consensus, target_phase}, 10_000)
+  end
+
   # Server Callbacks
 
   @impl true
@@ -243,6 +260,23 @@ defmodule InterviewStudio.Agents.Director do
   end
 
   @impl true
+  def handle_call({:poll_transition, target_phase}, _from, state) do
+    # CONSENSUS MECHANISM: Poll all agents for their votes on phase transition
+    votes = gather_transition_votes(state.session_id, target_phase)
+    Logger.debug("[Director] Polled transition votes for #{target_phase}: #{inspect(votes)}")
+    {:reply, votes, state}
+  end
+
+  @impl true
+  def handle_call({:check_consensus, target_phase}, _from, state) do
+    # CONSENSUS MECHANISM: Check if agents agree on the transition
+    votes = gather_transition_votes(state.session_id, target_phase)
+    result = evaluate_consensus(votes, target_phase)
+    Logger.debug("[Director] Consensus check for #{target_phase}: #{elem(result, 0)}")
+    {:reply, result, state}
+  end
+
+  @impl true
   def handle_info({:signal, signal}, state) do
     new_state = handle_signal(signal, state)
     {:noreply, new_state}
@@ -327,31 +361,35 @@ defmodule InterviewStudio.Agents.Director do
   defp decide_next_action(state) do
     cond do
       # User explicitly wants to wrap up - check directly (don't wait for async signal)
+      # This overrides consensus - user intent is always respected
       user_wants_to_wrap_up?(state.last_user_message) ->
         # Skip directly to synthesis if not there yet, or to closing if already past
         if state.current_phase in [:synthesis, :closing] do
           %{
             type: :transition,
             to_phase: :closing,
-            reason: "User requested wrap up"
+            reason: "User requested wrap up",
+            consensus_override: :user_request
           }
         else
           %{
             type: :transition,
             to_phase: :synthesis,
-            reason: "User requested wrap up"
+            reason: "User requested wrap up",
+            consensus_override: :user_request
           }
         end
 
-      # Critical engagement - wrap up
+      # Critical engagement - wrap up (engagement monitor has high weight)
       state.engagement_level == :critical ->
         %{
           type: :transition,
           to_phase: :closing,
-          reason: "Engagement dropped to critical level"
+          reason: "Engagement dropped to critical level",
+          consensus_override: :critical_engagement
         }
 
-      # In preparation - auto-advance to opening
+      # In preparation - auto-advance to opening (no consensus needed)
       state.current_phase == :preparation ->
         %{
           type: :transition,
@@ -366,11 +404,8 @@ defmodule InterviewStudio.Agents.Director do
           m.role == :user and m.content != "" and m.content != nil
         end)
         if length(user_messages) >= 1 do
-          %{
-            type: :transition,
-            to_phase: :core_questions,
-            reason: "Opening complete, user engaged"
-          }
+          # CONSENSUS: Check if agents agree to move to core questions
+          maybe_transition_with_consensus(state, :core_questions, "Opening complete, user engaged")
         else
           question = get_opening_question()
           %{
@@ -393,20 +428,12 @@ defmodule InterviewStudio.Agents.Director do
         cond do
           # User has responded to synthesis - move to closing
           state.synthesis_delivered and state.user_responded_to_synthesis ->
-            %{
-              type: :transition,
-              to_phase: :closing,
-              reason: "Synthesis complete, user confirmed"
-            }
+            # CONSENSUS: Check before moving to closing
+            maybe_transition_with_consensus(state, :closing, "Synthesis complete, user confirmed")
 
           # Synthesis already delivered - user response triggers closing
-          # Don't wait, just transition if they've said anything
           state.synthesis_delivered and state.last_user_message != nil ->
-            %{
-              type: :transition,
-              to_phase: :closing,
-              reason: "Synthesis delivered, moving to closing"
-            }
+            maybe_transition_with_consensus(state, :closing, "Synthesis delivered, moving to closing")
 
           # First time - deliver synthesis
           true ->
@@ -426,6 +453,62 @@ defmodule InterviewStudio.Agents.Director do
       true ->
         %{type: :wait}
     end
+  end
+
+  # CONSENSUS MECHANISM: Attempt transition with agent consensus
+  # If no consensus, Director makes final call but logs the disagreement
+  defp maybe_transition_with_consensus(state, target_phase, default_reason) do
+    votes = gather_transition_votes(state.session_id, target_phase)
+    {consensus_result, _votes} = evaluate_consensus(votes, target_phase)
+
+    case consensus_result do
+      :consensus ->
+        Logger.info("[Director] CONSENSUS reached for transition to #{target_phase}")
+        %{
+          type: :transition,
+          to_phase: target_phase,
+          reason: default_reason,
+          consensus: :reached,
+          votes: votes
+        }
+
+      :no_consensus ->
+        # Director makes final call but records the disagreement
+        Logger.warning("[Director] NO CONSENSUS for #{target_phase} - Director overriding. Votes: #{inspect(votes)}")
+
+        # Emit disagreement signal for debug visibility
+        emit_disagreement_signal(target_phase, votes, state)
+
+        %{
+          type: :transition,
+          to_phase: target_phase,
+          reason: "#{default_reason} (Director override - no consensus)",
+          consensus: :director_override,
+          votes: votes
+        }
+    end
+  end
+
+  defp emit_disagreement_signal(target_phase, votes, _state) do
+    signal = %Jido.Signal{
+      type: "director.consensus.disagreement",
+      source: "director",
+      id: Jido.Util.generate_id(),
+      data: %{
+        target_phase: target_phase,
+        votes: format_votes_for_signal(votes),
+        resolution: :director_override,
+        timestamp: DateTime.utc_now()
+      }
+    }
+    InterviewBus.publish(signal)
+  end
+
+  defp format_votes_for_signal(votes) do
+    votes
+    |> Enum.map(fn {agent, {vote, rationale}} ->
+      %{agent: agent, vote: vote, rationale: rationale}
+    end)
   end
 
   defp decide_core_questions_action(state) do
@@ -457,19 +540,12 @@ defmodule InterviewStudio.Agents.Director do
         }
 
       # All topics covered - transition to probing or synthesis
+      # CONSENSUS: Check with agents before major transitions
       state.pending_probes != [] ->
-        %{
-          type: :transition,
-          to_phase: :probing,
-          reason: "Core topics explored, probes pending"
-        }
+        maybe_transition_with_consensus(state, :probing, "Core topics explored, probes pending")
 
       true ->
-        %{
-          type: :transition,
-          to_phase: :synthesis,
-          reason: "Core topics explored"
-        }
+        maybe_transition_with_consensus(state, :synthesis, "Core topics explored")
     end
   end
 
@@ -548,13 +624,9 @@ defmodule InterviewStudio.Agents.Director do
           topic: probe.topic
         }
 
-      # Done probing
+      # Done probing - CONSENSUS: Check with agents before synthesis
       true ->
-        %{
-          type: :transition,
-          to_phase: :synthesis,
-          reason: "Probing complete"
-        }
+        maybe_transition_with_consensus(state, :synthesis, "Probing complete")
     end
   end
 
@@ -618,6 +690,116 @@ defmodule InterviewStudio.Agents.Director do
     InterviewBus.subscribe("observer.insight.**")
     InterviewBus.subscribe("observer.suggestion.**")
     InterviewBus.subscribe("observer.status.**")
+  end
+
+  # CONSENSUS MECHANISM: Gather votes from all observer agents
+  defp gather_transition_votes(session_id, target_phase) do
+    alias InterviewStudio.Agents.{StoryAnalyst, ProbeCoach, EngagementMonitor}
+
+    # Poll each agent in parallel with timeout handling
+    tasks = [
+      Task.async(fn -> {:story_analyst, safe_vote(StoryAnalyst, session_id, target_phase)} end),
+      Task.async(fn -> {:probe_coach, safe_vote(ProbeCoach, session_id, target_phase)} end),
+      Task.async(fn -> {:engagement_monitor, safe_vote(EngagementMonitor, session_id, target_phase)} end)
+    ]
+
+    # Wait for all votes with timeout
+    results = Task.yield_many(tasks, 3_000)
+
+    # Process results, using abstain for timeouts/failures
+    results
+    |> Enum.map(fn {task, result} ->
+      case result do
+        {:ok, {agent, vote}} -> {agent, vote}
+        {:exit, _reason} -> {:unknown, {:abstain, "Agent failed to respond"}}
+        nil ->
+          Task.shutdown(task, :brutal_kill)
+          {:unknown, {:abstain, "Agent timed out"}}
+      end
+    end)
+    |> Enum.into(%{})
+  end
+
+  defp safe_vote(agent_module, session_id, target_phase) do
+    try do
+      agent_module.vote_transition(session_id, target_phase)
+    rescue
+      _ -> {:abstain, "Agent error"}
+    catch
+      :exit, _ -> {:abstain, "Agent unavailable"}
+    end
+  end
+
+  # CONSENSUS MECHANISM: Evaluate votes to determine if transition should proceed
+  # Default threshold: 2/3 agents must be ready (or abstain counts as not blocking)
+  defp evaluate_consensus(votes, target_phase) do
+    ready_count = Enum.count(votes, fn {_agent, {vote, _}} -> vote == :ready end)
+    not_ready_count = Enum.count(votes, fn {_agent, {vote, _}} -> vote == :not_ready end)
+    total_voting = Enum.count(votes, fn {_agent, {vote, _}} -> vote != :abstain end)
+
+    # Apply weighted voting for certain decisions
+    weighted_votes = apply_vote_weights(votes, target_phase)
+
+    cond do
+      # Strong consensus: majority of voters say ready
+      ready_count >= 2 ->
+        {:consensus, votes}
+
+      # No objections: ready voters outnumber not_ready
+      ready_count > not_ready_count ->
+        {:consensus, votes}
+
+      # Weighted override for critical decisions
+      weighted_votes.weighted_ready > weighted_votes.threshold ->
+        {:consensus, votes}
+
+      # No consensus
+      true ->
+        {:no_consensus, votes}
+    end
+  end
+
+  # Apply agent-specific weights for certain decisions
+  defp apply_vote_weights(votes, target_phase) do
+    # Default weights
+    weights = %{
+      story_analyst: 1.0,
+      probe_coach: 1.0,
+      engagement_monitor: 1.0
+    }
+
+    # Adjust weights based on decision type
+    weights = case target_phase do
+      :closing ->
+        # Engagement Monitor has higher weight for closing decisions
+        %{weights | engagement_monitor: 2.0}
+
+      :synthesis ->
+        # Story Analyst has higher weight for synthesis readiness
+        %{weights | story_analyst: 1.5}
+
+      :probing ->
+        # Probe Coach has higher weight for probing decisions
+        %{weights | probe_coach: 1.5}
+
+      _ ->
+        weights
+    end
+
+    # Calculate weighted score
+    weighted_ready = votes
+    |> Enum.reduce(0.0, fn {agent, {vote, _}}, acc ->
+      weight = Map.get(weights, agent, 1.0)
+      case vote do
+        :ready -> acc + weight
+        _ -> acc
+      end
+    end)
+
+    total_weight = weights |> Map.values() |> Enum.sum()
+    threshold = total_weight * 0.6  # 60% threshold
+
+    %{weighted_ready: weighted_ready, threshold: threshold, weights: weights}
   end
 
   # LLM Response Generation

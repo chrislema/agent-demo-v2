@@ -52,6 +52,15 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
     GenServer.call(via_tuple(session_id), :analyze_now, 10_000)
   end
 
+  @doc """
+  Vote on readiness for a phase transition.
+  Used by Director.poll_transition_readiness/2 for consensus-based phase transitions.
+  Returns {:ready | :not_ready | :abstain, rationale}
+  """
+  def vote_transition(session_id, target_phase) do
+    GenServer.call(via_tuple(session_id), {:vote_transition, target_phase}, 5_000)
+  end
+
   # Server Callbacks
 
   @impl true
@@ -83,6 +92,15 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
   @impl true
   def handle_call(:get_themes, _from, state) do
     {:reply, state.themes, state}
+  end
+
+  @impl true
+  def handle_call({:vote_transition, target_phase}, _from, state) do
+    # CONSENSUS MECHANISM: Vote on phase transition readiness
+    # Story Analyst considers whether theme analysis is sufficient for the transition
+    vote = evaluate_transition_readiness(target_phase, state)
+    Logger.debug("[StoryAnalyst] Voting on transition to #{target_phase}: #{elem(vote, 0)}")
+    {:reply, vote, state}
   end
 
   @impl true
@@ -442,5 +460,55 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
       model: "meta-llama/llama-4-scout-17b-16e-instruct",
       temperature: 0.3
     }
+  end
+
+  # CONSENSUS MECHANISM: Evaluate readiness for phase transition
+  # Returns {:ready | :not_ready | :abstain, rationale}
+  defp evaluate_transition_readiness(target_phase, state) do
+    theme_count = length(state.themes)
+    pattern_count = length(state.patterns)
+    has_conversation = length(state.conversation_buffer) > 0
+
+    case target_phase do
+      :synthesis ->
+        # For synthesis, we need substantial theme discovery
+        cond do
+          theme_count >= 3 ->
+            {:ready, "Identified #{theme_count} themes - sufficient for synthesis"}
+          theme_count >= 1 and pattern_count >= 1 ->
+            {:ready, "Found #{theme_count} themes and #{pattern_count} patterns - ready for synthesis"}
+          has_conversation and theme_count == 0 ->
+            {:not_ready, "No themes discovered yet - need more analysis before synthesis"}
+          true ->
+            {:abstain, "Insufficient data to make a recommendation"}
+        end
+
+      :closing ->
+        # For closing, we should have completed our analysis
+        if theme_count >= 2 or (theme_count >= 1 and state.engagement_level == :critical) do
+          {:ready, "Theme analysis complete (#{theme_count} themes) - ready to close"}
+        else
+          {:abstain, "Deferring to other agents on closing decision"}
+        end
+
+      :core_questions ->
+        # Transitioning to core questions - we're ready if we have any conversation context
+        if has_conversation do
+          {:ready, "Ready to analyze core question responses"}
+        else
+          {:ready, "Ready to begin analysis"}
+        end
+
+      :probing ->
+        # For probing phase, check if we've found interesting threads to explore
+        if theme_count >= 1 do
+          {:ready, "Themes discovered that could benefit from probing"}
+        else
+          {:abstain, "No strong opinion on probing transition"}
+        end
+
+      _ ->
+        {:abstain, "No specific readiness criteria for #{target_phase}"}
+    end
   end
 end
