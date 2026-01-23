@@ -172,6 +172,48 @@ defmodule InterviewStudio.Agents.Director do
     {:reply, action, new_state}
   end
 
+  @impl true
+  def handle_call({:generate_response, action_type, context}, _from, state) do
+    response = do_generate_response(action_type, context, state)
+    {:reply, response, state}
+  end
+
+  @impl true
+  def handle_call({:set_phase, phase}, _from, state) do
+    Logger.debug("[Director] Phase set directly to: #{phase}")
+    {:reply, :ok, %{state | current_phase: phase}}
+  end
+
+  @impl true
+  def handle_call({:host_message, message}, _from, state) do
+    # Record interviewer's message in conversation history
+    timestamp = DateTime.utc_now()
+
+    new_history = [
+      %{role: :host, content: message, timestamp: timestamp}
+      | state.conversation_history
+    ]
+
+    {:reply, :ok, %{state | conversation_history: new_history}}
+  end
+
+  @impl true
+  def handle_call({:poll_transition, target_phase}, _from, state) do
+    # CONSENSUS MECHANISM: Poll all agents for their votes on phase transition
+    votes = gather_transition_votes(state.session_id, target_phase)
+    Logger.debug("[Director] Polled transition votes for #{target_phase}: #{inspect(votes)}")
+    {:reply, votes, state}
+  end
+
+  @impl true
+  def handle_call({:check_consensus, target_phase}, _from, state) do
+    # CONSENSUS MECHANISM: Check if agents agree on the transition
+    votes = gather_transition_votes(state.session_id, target_phase)
+    result = evaluate_consensus(votes, target_phase)
+    Logger.debug("[Director] Consensus check for #{target_phase}: #{elem(result, 0)}")
+    {:reply, result, state}
+  end
+
   # Merge parallel agent insights into Director's state for decision-making
   defp merge_insights_into_state(state, insights) when map_size(insights) == 0 do
     # No insights provided - fall back to sync engagement check
@@ -232,48 +274,6 @@ defmodule InterviewStudio.Agents.Director do
       end
     end)
     |> Enum.take(5)
-  end
-
-  @impl true
-  def handle_call({:generate_response, action_type, context}, _from, state) do
-    response = do_generate_response(action_type, context, state)
-    {:reply, response, state}
-  end
-
-  @impl true
-  def handle_call({:set_phase, phase}, _from, state) do
-    Logger.debug("[Director] Phase set directly to: #{phase}")
-    {:reply, :ok, %{state | current_phase: phase}}
-  end
-
-  @impl true
-  def handle_call({:host_message, message}, _from, state) do
-    # Record interviewer's message in conversation history
-    timestamp = DateTime.utc_now()
-
-    new_history = [
-      %{role: :host, content: message, timestamp: timestamp}
-      | state.conversation_history
-    ]
-
-    {:reply, :ok, %{state | conversation_history: new_history}}
-  end
-
-  @impl true
-  def handle_call({:poll_transition, target_phase}, _from, state) do
-    # CONSENSUS MECHANISM: Poll all agents for their votes on phase transition
-    votes = gather_transition_votes(state.session_id, target_phase)
-    Logger.debug("[Director] Polled transition votes for #{target_phase}: #{inspect(votes)}")
-    {:reply, votes, state}
-  end
-
-  @impl true
-  def handle_call({:check_consensus, target_phase}, _from, state) do
-    # CONSENSUS MECHANISM: Check if agents agree on the transition
-    votes = gather_transition_votes(state.session_id, target_phase)
-    result = evaluate_consensus(votes, target_phase)
-    Logger.debug("[Director] Consensus check for #{target_phase}: #{elem(result, 0)}")
-    {:reply, result, state}
   end
 
   @impl true
@@ -639,7 +639,7 @@ defmodule InterviewStudio.Agents.Director do
 
   # State updates based on actions
 
-  defp apply_action_to_state(%{type: :ask_dynamic, topic: topic} = action, state) do
+  defp apply_action_to_state(%{type: :ask_dynamic, topic: topic} = _action, state) do
     # Dynamic question - mark topic as explored
     explored = [topic | state.topics_explored]
     remaining = Enum.reject(state.topics_to_explore, fn t -> t == topic end)
@@ -735,7 +735,7 @@ defmodule InterviewStudio.Agents.Director do
   defp evaluate_consensus(votes, target_phase) do
     ready_count = Enum.count(votes, fn {_agent, {vote, _}} -> vote == :ready end)
     not_ready_count = Enum.count(votes, fn {_agent, {vote, _}} -> vote == :not_ready end)
-    total_voting = Enum.count(votes, fn {_agent, {vote, _}} -> vote != :abstain end)
+    _total_voting = Enum.count(votes, fn {_agent, {vote, _}} -> vote != :abstain end)
 
     # Apply weighted voting for certain decisions
     weighted_votes = apply_vote_weights(votes, target_phase)
@@ -915,52 +915,6 @@ defmodule InterviewStudio.Agents.Director do
     """
   end
 
-  defp format_themes_for_prompt([]), do: "No themes identified yet - this is early in the conversation."
-  defp format_themes_for_prompt(themes) do
-    themes
-    |> Enum.take(5)
-    |> Enum.map(fn t ->
-      theme = t[:theme] || t.theme || "unknown"
-      evidence = t[:evidence] || t.evidence || ""
-      "- #{theme}" <> if(evidence != "", do: " (evidence: #{String.slice(evidence, 0, 100)})", else: "")
-    end)
-    |> Enum.join("\n")
-  end
-
-  defp format_probes_for_prompt([]), do: "No specific probes suggested yet."
-  defp format_probes_for_prompt(probes) do
-    probes
-    |> Enum.take(3)
-    |> Enum.map(fn p ->
-      topic = p[:topic] || p.topic || "unknown"
-      rationale = p[:rationale] || p.rationale || ""
-      priority = p[:priority] || p.priority || :medium
-      "- [#{priority}] #{topic}" <> if(rationale != "", do: ": #{rationale}", else: "")
-    end)
-    |> Enum.join("\n")
-  end
-
-  defp engagement_to_guidance(:high) do
-    "User is highly engaged - lean in! Ask deeper, more probing questions. They're ready to share."
-  end
-  defp engagement_to_guidance(:medium) do
-    "User engagement is moderate - balance depth with accessibility. Build on what's working."
-  end
-  defp engagement_to_guidance(:low) do
-    "User engagement is lower - keep it lighter. Consider shifting to a topic they might find more energizing."
-  end
-  defp engagement_to_guidance(:critical) do
-    "User seems ready to wrap up - respect their energy. Keep questions brief and consider transitioning."
-  end
-  defp engagement_to_guidance(_), do: "Adjust your approach based on the conversation flow."
-
-  defp topic_to_description(:origin), do: "their ORIGIN STORY - background, how they got started, where they came from"
-  defp topic_to_description(:passion), do: "their PASSION - what drives them, what they care deeply about"
-  defp topic_to_description(:differentiation), do: "what makes them UNIQUE - their distinctive approach or perspective"
-  defp topic_to_description(:moments), do: "PIVOTAL MOMENTS - turning points that shaped who they became"
-  defp topic_to_description(:vision), do: "their VISION - where they're headed, what they're working toward"
-  defp topic_to_description(topic), do: "#{topic}"
-
   defp build_user_prompt(:probe, %{question: question, topic: topic}, state) do
     history = format_recent_history(state.conversation_history, 3)
 
@@ -1008,6 +962,53 @@ defmodule InterviewStudio.Agents.Director do
   defp build_user_prompt(_action_type, _context, _state) do
     "Respond naturally to continue the conversation."
   end
+
+  # Helper functions for build_user_prompt
+  defp format_themes_for_prompt([]), do: "No themes identified yet - this is early in the conversation."
+  defp format_themes_for_prompt(themes) do
+    themes
+    |> Enum.take(5)
+    |> Enum.map(fn t ->
+      theme = t[:theme] || t.theme || "unknown"
+      evidence = t[:evidence] || t.evidence || ""
+      "- #{theme}" <> if(evidence != "", do: " (evidence: #{String.slice(evidence, 0, 100)})", else: "")
+    end)
+    |> Enum.join("\n")
+  end
+
+  defp format_probes_for_prompt([]), do: "No specific probes suggested yet."
+  defp format_probes_for_prompt(probes) do
+    probes
+    |> Enum.take(3)
+    |> Enum.map(fn p ->
+      topic = p[:topic] || p.topic || "unknown"
+      rationale = p[:rationale] || p.rationale || ""
+      priority = p[:priority] || p.priority || :medium
+      "- [#{priority}] #{topic}" <> if(rationale != "", do: ": #{rationale}", else: "")
+    end)
+    |> Enum.join("\n")
+  end
+
+  defp engagement_to_guidance(:high) do
+    "User is highly engaged - lean in! Ask deeper, more probing questions. They're ready to share."
+  end
+  defp engagement_to_guidance(:medium) do
+    "User engagement is moderate - balance depth with accessibility. Build on what's working."
+  end
+  defp engagement_to_guidance(:low) do
+    "User engagement is lower - keep it lighter. Consider shifting to a topic they might find more energizing."
+  end
+  defp engagement_to_guidance(:critical) do
+    "User seems ready to wrap up - respect their energy. Keep questions brief and consider transitioning."
+  end
+  defp engagement_to_guidance(_), do: "Adjust your approach based on the conversation flow."
+
+  defp topic_to_description(:origin), do: "their ORIGIN STORY - background, how they got started, where they came from"
+  defp topic_to_description(:passion), do: "their PASSION - what drives them, what they care deeply about"
+  defp topic_to_description(:differentiation), do: "what makes them UNIQUE - their distinctive approach or perspective"
+  defp topic_to_description(:moments), do: "PIVOTAL MOMENTS - turning points that shaped who they became"
+  defp topic_to_description(:vision), do: "their VISION - where they're headed, what they're working toward"
+  defp topic_to_description(topic), do: "#{topic}"
 
   defp format_recent_history(history, count) do
     history

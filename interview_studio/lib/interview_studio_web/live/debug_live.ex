@@ -643,12 +643,6 @@ defmodule InterviewStudioWeb.DebugLive do
     |> Jason.encode!(pretty: true)
   end
 
-  defp count_signals_from(signals, source) do
-    Enum.count(signals, fn s ->
-      String.contains?(String.downcase(s.source), source)
-    end)
-  end
-
   # Phase 5: Agent status indicator helpers
   defp agent_status_class(active_agents, agent_key, color) do
     case Map.get(active_agents, agent_key) do
