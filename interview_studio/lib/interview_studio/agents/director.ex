@@ -37,7 +37,9 @@ defmodule InterviewStudio.Agents.Director do
     :user_responded_to_synthesis,
     :last_insights,         # Most recent insights from parallel analysis
     :questions_asked,       # Track questions to prevent repetition
-    :frustration_level      # Track user frustration from sentiment agent
+    :frustration_level,     # Track user frustration from sentiment agent
+    :user_intent,           # Semantic intent: :continue, :change_topic, :end_interview
+    :chronological_direction # Momentum preference: :forward, :backward, :neutral
   ]
 
   # Client API
@@ -110,7 +112,9 @@ defmodule InterviewStudio.Agents.Director do
       user_responded_to_synthesis: false,
       last_insights: %{},
       questions_asked: [],
-      frustration_level: :none
+      frustration_level: :none,
+      user_intent: :continue,
+      chronological_direction: :neutral
     }
 
     # Subscribe to relevant signals
@@ -336,11 +340,22 @@ defmodule InterviewStudio.Agents.Director do
     %{state | engagement_level: level}
   end
 
-  # Handle frustration detection from Sentiment Agent
+  # Handle frustration detection from Sentiment Agent (legacy signal)
   defp handle_signal(%{type: "observer.status.frustration"} = signal, state) do
     level = signal.data.level
     Logger.info("[Director] Frustration detected: #{level}")
     %{state | frustration_level: level}
+  end
+
+  # Handle semantic sentiment signal from Sentiment Agent (new comprehensive signal)
+  defp handle_signal(%{type: "observer.status.sentiment"} = signal, state) do
+    data = signal.data
+    Logger.info("[Director] Semantic sentiment - intent: #{data.user_intent}, direction: #{data.chronological_direction}, frustration: #{data.frustration_level}")
+    %{state |
+      user_intent: data.user_intent,
+      chronological_direction: data.chronological_direction,
+      frustration_level: data.frustration_level
+    }
   end
 
   # Handle timer signals
@@ -353,7 +368,6 @@ defmodule InterviewStudio.Agents.Director do
 
   defp handle_signal(_signal, state), do: state
 
-  # Wrap-up detection - check user message directly for wrap-up cues
   # Get engagement level directly from Engagement Monitor (sync call)
   defp get_current_engagement(session_id) do
     alias InterviewStudio.Agents.EngagementMonitor
@@ -366,41 +380,33 @@ defmodule InterviewStudio.Agents.Director do
     end
   end
 
-  defp user_wants_to_wrap_up?(nil), do: false
-  defp user_wants_to_wrap_up?(message) do
-    wrap_up_markers = [
-      "wrap up", "let's wrap", "wrapping up", "finish", "let's finish",
-      "move on", "let's move on", "already explained", "already said",
-      "end the interview", "that's enough", "i'm done", "let's end",
-      "can we finish", "ready to finish", "time to wrap", "let's stop"
-    ]
-    downcased = String.downcase(message)
-    Enum.any?(wrap_up_markers, fn marker -> String.contains?(downcased, marker) end)
-  end
-
   # Decision logic
 
   defp decide_next_action(state) do
     cond do
-      # User explicitly wants to wrap up - check directly (don't wait for async signal)
-      # This overrides consensus - user intent is always respected
-      user_wants_to_wrap_up?(state.last_user_message) ->
-        # Skip directly to synthesis if not there yet, or to closing if already past
+      # User explicitly wants to END the interview (semantic detection)
+      # "Let's wrap up", "I'm done", etc. - NOT "let's move on"
+      state.user_intent == :end_interview ->
         if state.current_phase in [:synthesis, :closing] do
           %{
             type: :transition,
             to_phase: :closing,
-            reason: "User requested wrap up",
+            reason: "User requested to end interview",
             consensus_override: :user_request
           }
         else
           %{
             type: :transition,
             to_phase: :synthesis,
-            reason: "User requested wrap up",
+            reason: "User requested to end interview",
             consensus_override: :user_request
           }
         end
+
+      # User wants to CHANGE TOPIC - NOT end the interview!
+      # "Let's move on", "Can we talk about something else", etc.
+      state.user_intent == :change_topic ->
+        handle_topic_change_request(state)
 
       # Critical engagement - wrap up (engagement monitor has high weight)
       state.engagement_level == :critical ->
@@ -542,6 +548,54 @@ defmodule InterviewStudio.Agents.Director do
     end)
   end
 
+  # Handle user's request to change topics (NOT end interview)
+  # This is the key fix: "let's move on" should pivot to a new topic, not terminate
+  defp handle_topic_change_request(state) do
+    if state.topics_to_explore != [] do
+      # Select next topic, respecting chronological momentum
+      next_topic = select_topic_respecting_momentum(state)
+      Logger.info("[Director] Topic change requested - pivoting to: #{next_topic}")
+      %{
+        type: :ask_dynamic,
+        topic: next_topic,
+        themes: state.active_themes,
+        probes: [],  # Clear pending probes when user wants to change topic
+        engagement: state.engagement_level,
+        source: :topic_change_request,
+        reason: "User requested topic change"
+      }
+    else
+      # No more topics - transition to synthesis
+      Logger.info("[Director] Topic change requested but topics exhausted - moving to synthesis")
+      %{
+        type: :transition,
+        to_phase: :synthesis,
+        reason: "User requested topic change, but all topics explored"
+      }
+    end
+  end
+
+  # Select next topic respecting chronological direction preference
+  defp select_topic_respecting_momentum(state) do
+    remaining = state.topics_to_explore
+
+    case state.chronological_direction do
+      :forward ->
+        # Prefer forward-looking topics: vision, passion, differentiation
+        forward_topics = [:vision, :passion, :differentiation]
+        Enum.find(forward_topics, fn t -> t in remaining end) || hd(remaining)
+
+      :backward ->
+        # User is talking about the past - let them, but don't encourage regression
+        # Still prioritize forward topics unless they explicitly want origin
+        hd(remaining)
+
+      :neutral ->
+        # No preference - use standard topic selection
+        select_next_topic(state)
+    end
+  end
+
   defp decide_core_questions_action(state) do
     # Check if we have high-priority probes from Probe Coach
     high_probe = Enum.find(state.pending_probes, fn p -> p.priority == :high end)
@@ -609,12 +663,14 @@ defmodule InterviewStudio.Agents.Director do
 
   defp find_theme_related_topic(themes, remaining_topics) do
     # Map themes to related topics
+    # NOTE: Removed "childhood", "grew up", "early" from origin - these pull adults backward
+    # Origin is about professional/career beginnings, not childhood
     topic_keywords = %{
-      origin: ["background", "start", "began", "grew up", "childhood", "early"],
-      passion: ["love", "passion", "drive", "motivate", "care about", "excited"],
-      differentiation: ["unique", "different", "approach", "perspective", "style"],
-      moments: ["moment", "turning point", "pivotal", "changed", "realized"],
-      vision: ["future", "goal", "vision", "next", "working toward", "dream"]
+      origin: ["background", "start", "began", "journey", "path", "career", "how you got here", "first job", "started out"],
+      passion: ["love", "passion", "drive", "motivate", "care about", "excited", "energy", "fulfilling"],
+      differentiation: ["unique", "different", "approach", "perspective", "style", "stand out", "special"],
+      moments: ["moment", "turning point", "pivotal", "changed", "realized", "breakthrough", "milestone"],
+      vision: ["future", "goal", "vision", "next", "working toward", "dream", "aspiration", "building"]
     }
 
     Enum.find(remaining_topics, fn topic ->
@@ -940,12 +996,21 @@ defmodule InterviewStudio.Agents.Director do
     probes = context[:probes] || context.probes || []
     engagement = context[:engagement] || context.engagement || :medium
     frustration = state.frustration_level || :none
+    chronological_direction = state.chronological_direction || :neutral
 
     themes_text = format_themes_for_prompt(themes)
     probes_text = format_probes_for_prompt(probes)
     engagement_guidance = engagement_to_guidance(engagement)
     frustration_guidance = frustration_to_guidance(frustration)
+    chronological_guidance = chronological_to_guidance(chronological_direction)
     topic_description = topic_to_description(topic)
+
+    # Check if this is from a topic change request
+    topic_change_note = if context[:source] == :topic_change_request do
+      "\n\nIMPORTANT: User just asked to change topics. Make sure this question is about something COMPLETELY DIFFERENT from what you were just discussing."
+    else
+      ""
+    end
 
     """
     Recent conversation:
@@ -965,6 +1030,10 @@ defmodule InterviewStudio.Agents.Director do
     SENTIMENT STATUS: #{frustration}
     #{frustration_guidance}
 
+    CHRONOLOGICAL MOMENTUM: #{chronological_direction}
+    #{chronological_guidance}
+    #{topic_change_note}
+
     === YOUR TASK ===
 
     Generate a question about: #{topic_description}
@@ -978,6 +1047,7 @@ defmodule InterviewStudio.Agents.Director do
     6. DO NOT ask generic questions - be specific to what this person has shared
     7. The question should feel like a natural continuation of the conversation
     8. If sentiment shows ANY frustration, move to a COMPLETELY DIFFERENT topic
+    9. RESPECT THE CHRONOLOGICAL MOMENTUM - if they've moved forward in their story, don't pull them back to childhood/early days
 
     BAD EXAMPLE (generic): "What drives you in your work?"
     GOOD EXAMPLE (specific): "You mentioned your brother was the 'smart one' - I'm curious how that dynamic shaped your approach to building your company..."
@@ -1088,7 +1158,15 @@ defmodule InterviewStudio.Agents.Director do
   end
   defp frustration_to_guidance(_), do: "Sentiment is neutral - proceed normally."
 
-  defp topic_to_description(:origin), do: "their ORIGIN STORY - background, how they got started, where they came from"
+  defp chronological_to_guidance(:forward) do
+    "User is talking about future/current work - RESPECT THIS MOMENTUM. Ask about vision, goals, current projects. Do NOT pull them back to childhood or early years."
+  end
+  defp chronological_to_guidance(:backward) do
+    "User is discussing their past. That's fine, but don't push further back than they've gone. Look for opportunities to bridge to the present/future."
+  end
+  defp chronological_to_guidance(_), do: "No strong chronological preference - follow the natural flow of conversation."
+
+  defp topic_to_description(:origin), do: "their ORIGIN STORY - their professional journey, how they got into this field, the path that led them here (NOT childhood - focus on career/professional beginnings)"
   defp topic_to_description(:passion), do: "their PASSION - what drives them, what they care deeply about"
   defp topic_to_description(:differentiation), do: "what makes them UNIQUE - their distinctive approach or perspective"
   defp topic_to_description(:moments), do: "PIVOTAL MOMENTS - turning points that shaped who they became"
