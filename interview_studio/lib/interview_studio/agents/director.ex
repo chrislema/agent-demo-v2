@@ -862,22 +862,26 @@ defmodule InterviewStudio.Agents.Director do
 
     questions_asked = format_questions_asked(state.questions_asked)
 
+    # Get interview memory from Scribe
+    interview_memory = get_interview_memory(state.session_id)
+
     """
     You are a warm, skilled interviewer conducting a "Story of You" interview.
     Your goal is to discover what makes this person unique and craft a compelling written piece about them - their background, journey, what drives them, and what sets them apart.
 
     CRITICAL INTERVIEW RULES:
     1. NEVER repeat a question you've already asked, even rephrased
-    2. When someone gives a brief answer ("nope", "not really", a short sentence), ACCEPT IT and move to a new topic
-    3. Don't push for "deeper" answers - take what they give you and keep the conversation flowing
-    4. If they seem frustrated or say things like "I already answered that", immediately apologize briefly and move on
-    5. Your job is to gather their story, not to extract confessions - respect their boundaries
+    2. NEVER ask about something they've already told you - BUILD on what you learned
+    3. When someone gives a brief answer ("nope", "not really", a short sentence), ACCEPT IT and move to a new topic
+    4. Don't push for "deeper" answers - take what they give you and keep the conversation flowing
+    5. If they seem frustrated or say things like "I already answered that", immediately apologize briefly and move on
+    6. Your job is to gather their story, not to extract confessions - respect their boundaries
 
     Interview Style:
     - Be genuinely curious but not pushy
     - Keep responses concise (1-2 sentences max)
     - Be conversational, not formal
-    - Reference specific things they've shared
+    - Reference specific things they've shared from the INTERVIEW MEMORY below
     - Move forward, don't circle back
 
     Current phase: #{state.current_phase}
@@ -890,8 +894,26 @@ defmodule InterviewStudio.Agents.Director do
     Themes discovered:
     #{themes_text}
 
+    #{interview_memory}
+
     Always respond in first person as the interviewer. Never break character.
+    Use the INTERVIEW MEMORY above to reference specific things they've shared and avoid repetition.
     """
+  end
+
+  # Get formatted interview context from Scribe for LLM memory
+  defp get_interview_memory(session_id) do
+    alias InterviewStudio.Agents.Scribe
+    try do
+      case Scribe.get_interview_context(session_id) do
+        %{formatted_text: text} -> text
+        _ -> ""
+      end
+    rescue
+      _ -> ""
+    catch
+      :exit, _ -> ""
+    end
   end
 
   defp build_user_prompt(:ask, %{question: question}, state) do
@@ -948,16 +970,20 @@ defmodule InterviewStudio.Agents.Director do
     Generate a question about: #{topic_description}
 
     CRITICAL REQUIREMENTS:
-    1. The question MUST reference specific details from the conversation
-    2. If themes were discovered, weave them into your question
-    3. If probes were suggested, consider incorporating their insights
-    4. Match the question depth to the engagement AND sentiment level
-    5. DO NOT ask generic questions - be specific to what this person has shared
-    6. The question should feel like a natural continuation of the conversation
-    7. If sentiment shows ANY frustration, move to a COMPLETELY DIFFERENT topic
+    1. CHECK THE INTERVIEW MEMORY in the system prompt - DO NOT ask about anything already covered
+    2. The question MUST reference specific details from what they've shared
+    3. If themes were discovered, weave them into your question
+    4. If probes were suggested, consider incorporating their insights
+    5. Match the question depth to the engagement AND sentiment level
+    6. DO NOT ask generic questions - be specific to what this person has shared
+    7. The question should feel like a natural continuation of the conversation
+    8. If sentiment shows ANY frustration, move to a COMPLETELY DIFFERENT topic
 
     BAD EXAMPLE (generic): "What drives you in your work?"
     GOOD EXAMPLE (specific): "You mentioned your brother was the 'smart one' - I'm curious how that dynamic shaped your approach to building your company..."
+
+    REMEMBER: The system prompt contains KEY QUOTES and LEARNINGS from earlier in the interview.
+    Use these to craft questions that BUILD on what you've already learned, not repeat it.
 
     Respond with just the question, naturally phrased.
     """

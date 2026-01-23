@@ -45,6 +45,15 @@ defmodule InterviewStudio.Agents.Scribe do
     GenServer.call(via_tuple(session_id), :get_quotes)
   end
 
+  @doc """
+  Get a formatted context summary for LLM prompts.
+  Includes: phases completed, key quotes, and notable learnings.
+  This provides memory across the entire interview without passing full transcript.
+  """
+  def get_interview_context(session_id) do
+    GenServer.call(via_tuple(session_id), :get_interview_context)
+  end
+
   # Server Callbacks
 
   @impl true
@@ -80,6 +89,12 @@ defmodule InterviewStudio.Agents.Scribe do
   @impl true
   def handle_call(:get_quotes, _from, state) do
     {:reply, Enum.reverse(state.quotes), state}
+  end
+
+  @impl true
+  def handle_call(:get_interview_context, _from, state) do
+    context = format_interview_context(state)
+    {:reply, context, state}
   end
 
   @impl true
@@ -263,5 +278,102 @@ defmodule InterviewStudio.Agents.Scribe do
 
   defp via_tuple(session_id) do
     {:via, Registry, {InterviewStudio.SessionRegistry, {:scribe, session_id}}}
+  end
+
+  # Format interview context for LLM memory
+  defp format_interview_context(state) do
+    %{
+      phases_completed: format_phases_completed(state),
+      key_quotes: format_key_quotes(state),
+      conversation_summary: format_conversation_summary(state),
+      formatted_text: build_context_text(state)
+    }
+  end
+
+  defp format_phases_completed(state) do
+    state.phase_summaries
+    |> Enum.map(fn {phase, summary} ->
+      %{
+        phase: phase,
+        exchanges: summary.exchange_count,
+        user_engagement: if(summary.avg_user_response_length > 30, do: :high, else: :low)
+      }
+    end)
+  end
+
+  defp format_key_quotes(state) do
+    state.quotes
+    |> Enum.reverse()
+    |> Enum.take(10)
+    |> Enum.map(fn q ->
+      %{
+        quote: String.slice(q.quote, 0, 200),
+        tags: q.tags,
+        phase: q.phase
+      }
+    end)
+  end
+
+  defp format_conversation_summary(state) do
+    # Extract key facts from user messages
+    user_messages = state.transcript
+    |> Enum.reverse()
+    |> Enum.filter(fn e -> e.role == :user end)
+    |> Enum.map(fn e -> e.content end)
+
+    %{
+      total_exchanges: length(state.transcript),
+      user_messages: length(user_messages),
+      phases_visited: Map.keys(state.phase_summaries)
+    }
+  end
+
+  # Build formatted text suitable for LLM system prompt
+  defp build_context_text(state) do
+    quotes_text = state.quotes
+    |> Enum.reverse()
+    |> Enum.take(8)
+    |> Enum.map(fn q ->
+      tags = Enum.join(q.tags, ", ")
+      "- [#{tags}] \"#{String.slice(q.quote, 0, 150)}...\""
+    end)
+    |> Enum.join("\n")
+
+    phases_text = state.phase_summaries
+    |> Enum.map(fn {phase, summary} ->
+      engagement = if summary.avg_user_response_length > 30, do: "engaged", else: "brief"
+      "- #{phase}: #{summary.exchange_count} exchanges (#{engagement} responses)"
+    end)
+    |> Enum.join("\n")
+
+    # Extract key learnings from longer user responses
+    key_learnings = state.transcript
+    |> Enum.reverse()
+    |> Enum.filter(fn e -> e.role == :user and String.length(e.content) > 100 end)
+    |> Enum.take(5)
+    |> Enum.map(fn e ->
+      # Extract first sentence or first 150 chars as a "learning"
+      first_sentence = e.content
+      |> String.split(~r/[.!?]/)
+      |> List.first()
+      |> String.slice(0, 150)
+      "- #{first_sentence}"
+    end)
+    |> Enum.join("\n")
+
+    """
+    === INTERVIEW MEMORY (from Scribe) ===
+
+    PHASES COMPLETED:
+    #{if phases_text == "", do: "None yet", else: phases_text}
+
+    KEY QUOTES CAPTURED:
+    #{if quotes_text == "", do: "None yet", else: quotes_text}
+
+    KEY LEARNINGS FROM USER:
+    #{if key_learnings == "", do: "No substantial responses yet", else: key_learnings}
+
+    === END INTERVIEW MEMORY ===
+    """
   end
 end
