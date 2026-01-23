@@ -40,6 +40,16 @@ defmodule InterviewStudio.Agents.EngagementMonitor do
     GenServer.call(via_tuple(session_id), :get_level)
   end
 
+  @doc """
+  Vote on readiness for a phase transition.
+  Used by Director.poll_transition_readiness/2 for consensus-based phase transitions.
+  Engagement Monitor has HIGH WEIGHT for closing decisions.
+  Returns {:ready | :not_ready | :abstain, rationale}
+  """
+  def vote_transition(session_id, target_phase) do
+    GenServer.call(via_tuple(session_id), {:vote_transition, target_phase}, 5_000)
+  end
+
   # Server Callbacks
 
   @impl true
@@ -69,6 +79,15 @@ defmodule InterviewStudio.Agents.EngagementMonitor do
   @impl true
   def handle_call(:get_level, _from, state) do
     {:reply, state.level, state}
+  end
+
+  @impl true
+  def handle_call({:vote_transition, target_phase}, _from, state) do
+    # CONSENSUS MECHANISM: Vote on phase transition readiness
+    # Engagement Monitor has HIGH WEIGHT for closing/wrap-up decisions
+    vote = evaluate_transition_readiness(target_phase, state)
+    Logger.debug("[EngagementMonitor] Voting on transition to #{target_phase}: #{elem(vote, 0)}")
+    {:reply, vote, state}
   end
 
   @impl true
@@ -285,7 +304,43 @@ defmodule InterviewStudio.Agents.EngagementMonitor do
 
     InterviewBus.publish(signal)
     Logger.debug("[EngagementMonitor] Emitted status: #{state.level} (#{state.trend})")
+
+    # AGENT-TO-AGENT: Broadcast critical/low engagement to all agents
+    # This allows agents to adjust their behavior based on user energy
+    if state.level in [:critical, :low] do
+      broadcast_engagement_alert(state)
+    end
   end
+
+  # Broadcast engagement alerts to influence all agents
+  defp broadcast_engagement_alert(state) do
+    alert = %Jido.Signal{
+      type: "engagement.alert.broadcast",
+      source: "engagement_monitor",
+      id: Jido.Util.generate_id(),
+      data: %{
+        level: state.level,
+        trend: state.trend,
+        action_required: state.level == :critical,
+        message: engagement_alert_message(state.level, state.trend),
+        timestamp: DateTime.utc_now()
+      }
+    }
+
+    InterviewBus.publish(alert)
+    Logger.info("[EngagementMonitor] BROADCAST: Engagement alert - #{state.level}")
+  end
+
+  defp engagement_alert_message(:critical, _) do
+    "CRITICAL: User wants to wrap up. All agents should facilitate closing."
+  end
+  defp engagement_alert_message(:low, :declining) do
+    "LOW & DECLINING: User energy dropping. Reduce complexity, pause deep analysis."
+  end
+  defp engagement_alert_message(:low, _) do
+    "LOW: User energy is low. Keep interactions light."
+  end
+  defp engagement_alert_message(_, _), do: "Monitor engagement."
 
   defp subscribe_to_signals do
     InterviewBus.subscribe("interview.utterance.user")
@@ -293,5 +348,63 @@ defmodule InterviewStudio.Agents.EngagementMonitor do
 
   defp via_tuple(session_id) do
     {:via, Registry, {InterviewStudio.SessionRegistry, {:engagement_monitor, session_id}}}
+  end
+
+  # CONSENSUS MECHANISM: Evaluate readiness for phase transition
+  # Engagement Monitor has HIGH WEIGHT for closing/wrap-up decisions
+  # Returns {:ready | :not_ready | :abstain, rationale}
+  defp evaluate_transition_readiness(target_phase, state) do
+    case target_phase do
+      :closing ->
+        # HIGH WEIGHT: Engagement Monitor is the authority on whether to close
+        case state.level do
+          :critical ->
+            {:ready, "CRITICAL engagement - strongly recommend closing immediately"}
+          :low ->
+            case state.trend do
+              :declining ->
+                {:ready, "Low and declining engagement - recommend closing"}
+              _ ->
+                {:ready, "Low engagement - support closing if others agree"}
+            end
+          :medium ->
+            {:abstain, "Moderate engagement - deferring to other factors"}
+          :high ->
+            {:not_ready, "High engagement - user is still invested, no need to rush"}
+        end
+
+      :synthesis ->
+        # For synthesis, engagement level matters
+        case state.level do
+          :critical ->
+            {:ready, "Critical engagement - move to synthesis quickly"}
+          :low ->
+            {:ready, "Low engagement - synthesis could help re-engage"}
+          _ ->
+            {:abstain, "Engagement is fine - neutral on synthesis timing"}
+        end
+
+      :probing ->
+        # Probing requires decent engagement
+        case state.level do
+          :critical ->
+            {:not_ready, "Engagement too low for probing - skip to closing"}
+          :low ->
+            {:not_ready, "Low engagement - probing may frustrate user"}
+          _ ->
+            {:ready, "Engagement supports deeper probing"}
+        end
+
+      :core_questions ->
+        # Starting core questions - engagement should be reasonable
+        if state.level in [:high, :medium] do
+          {:ready, "Engagement level supports core questions"}
+        else
+          {:abstain, "Engagement is low but deferring to flow"}
+        end
+
+      _ ->
+        {:abstain, "No specific engagement criteria for #{target_phase}"}
+    end
   end
 end

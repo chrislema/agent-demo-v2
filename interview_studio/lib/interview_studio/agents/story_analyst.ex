@@ -22,6 +22,7 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
     :patterns,
     :conversation_buffer,
     :analysis_count,
+    :engagement_level,     # Current engagement from Engagement Monitor
     :llm_config
   ]
 
@@ -42,6 +43,24 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
     GenServer.call(via_tuple(session_id), :get_themes)
   end
 
+  @doc """
+  Request immediate synchronous analysis.
+  Used by Session.gather_insights/2 for parallel analysis with synchronization barrier.
+  Returns {:ok, themes} or {:error, reason}
+  """
+  def analyze_now(session_id) do
+    GenServer.call(via_tuple(session_id), :analyze_now, 10_000)
+  end
+
+  @doc """
+  Vote on readiness for a phase transition.
+  Used by Director.poll_transition_readiness/2 for consensus-based phase transitions.
+  Returns {:ready | :not_ready | :abstain, rationale}
+  """
+  def vote_transition(session_id, target_phase) do
+    GenServer.call(via_tuple(session_id), {:vote_transition, target_phase}, 5_000)
+  end
+
   # Server Callbacks
 
   @impl true
@@ -55,6 +74,7 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
       patterns: [],
       conversation_buffer: [],
       analysis_count: 0,
+      engagement_level: :high,
       llm_config: llm_config
     }
 
@@ -72,6 +92,50 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
   @impl true
   def handle_call(:get_themes, _from, state) do
     {:reply, state.themes, state}
+  end
+
+  @impl true
+  def handle_call({:vote_transition, target_phase}, _from, state) do
+    # CONSENSUS MECHANISM: Vote on phase transition readiness
+    # Story Analyst considers whether theme analysis is sufficient for the transition
+    vote = evaluate_transition_readiness(target_phase, state)
+    Logger.debug("[StoryAnalyst] Voting on transition to #{target_phase}: #{elem(vote, 0)}")
+    {:reply, vote, state}
+  end
+
+  @impl true
+  def handle_call(:analyze_now, _from, state) do
+    # Synchronous analysis for parallel gathering
+    # Used by Session.gather_insights/2 synchronization barrier
+    Logger.debug("[StoryAnalyst] Synchronous analysis requested")
+
+    if Enum.empty?(state.conversation_buffer) do
+      # No conversation yet - return existing themes
+      {:reply, {:ok, state.themes}, state}
+    else
+      case analyze_themes(state) do
+        {:ok, new_themes, new_patterns} ->
+          # Update state with new insights
+          updated_themes = (new_themes ++ state.themes)
+            |> Enum.uniq_by(fn t -> t.theme end)
+            |> Enum.take(10)
+          updated_patterns = (new_patterns ++ state.patterns)
+            |> Enum.uniq_by(fn p -> p.pattern end)
+            |> Enum.take(5)
+
+          new_state = %{state | themes: updated_themes, patterns: updated_patterns}
+
+          # Also emit signals for UI visibility
+          emit_insights(new_themes, new_patterns, state)
+
+          {:reply, {:ok, updated_themes}, new_state}
+
+        {:error, reason} ->
+          Logger.warning("[StoryAnalyst] Sync analysis failed: #{inspect(reason)}")
+          # Return existing themes on failure
+          {:reply, {:ok, state.themes}, state}
+      end
+    end
   end
 
   @impl true
@@ -94,16 +158,38 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
     new_state = %{state | conversation_buffer: buffer, analysis_count: new_count}
 
     # Trigger analysis periodically, or on first substantive user message
-    should_analyze = role == :user and (
-      rem(new_count, @analysis_threshold) == 0 or
-      (new_count == 1 and String.length(content) > 50)
-    )
+    # BUT respect engagement level - don't do deep analysis when user is disengaged
+    should_analyze = role == :user and
+      state.engagement_level not in [:critical] and
+      (rem(new_count, @analysis_threshold) == 0 or
+       (new_count == 1 and String.length(content) > 50))
 
     if should_analyze do
       analyze_async(new_state)
     end
 
     new_state
+  end
+
+  # AGENT-TO-AGENT: Receive engagement alerts from Engagement Monitor
+  defp handle_signal(%{type: "engagement.alert.broadcast"} = signal, state) do
+    level = signal.data.level
+    Logger.debug("[StoryAnalyst] <- [EngagementMonitor] Engagement alert: #{level}")
+
+    new_state = %{state | engagement_level: level}
+
+    # If engagement is critical, log that we're pausing deep analysis
+    if level == :critical do
+      Logger.info("[StoryAnalyst] Pausing deep analysis due to critical engagement")
+    end
+
+    new_state
+  end
+
+  # Also handle regular engagement status updates
+  defp handle_signal(%{type: "observer.status.engagement"} = signal, state) do
+    level = signal.data.level
+    %{state | engagement_level: level}
   end
 
   defp handle_signal(_signal, state), do: state
@@ -239,7 +325,7 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
   end
 
   defp emit_insights(themes, patterns, state) do
-    # Emit theme signals
+    # Emit theme signals (broadcast for UI/debug)
     Enum.each(themes, fn theme ->
       signal = %Jido.Signal{
         type: "observer.insight.theme",
@@ -254,6 +340,10 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
       }
       InterviewBus.publish(signal)
       Logger.debug("[StoryAnalyst] Identified theme: #{theme.theme}")
+
+      # AGENT-TO-AGENT: Send theme directly to Probe Coach
+      # This enables the Probe Coach to generate theme-aware probes
+      notify_probe_coach(theme, state)
     end)
 
     # Emit pattern signals
@@ -332,8 +422,32 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
     end
   end
 
+  # AGENT-TO-AGENT COMMUNICATION
+  # Send discovered themes directly to Probe Coach so it can generate
+  # theme-aware probe suggestions (not just utterance-based)
+  defp notify_probe_coach(theme, _state) do
+    signal = %Jido.Signal{
+      type: "analyst.theme.discovered",
+      source: "story_analyst",
+      id: Jido.Util.generate_id(),
+      data: %{
+        target: "probe_coach",  # Direct message to Probe Coach
+        theme: theme.theme,
+        evidence: theme.evidence,
+        confidence: theme.confidence,
+        timestamp: DateTime.utc_now(),
+        suggestion: "Consider probing how this theme connects to other areas of their story"
+      }
+    }
+    InterviewBus.publish(signal)
+    Logger.debug("[StoryAnalyst] -> [ProbeCoach] Theme notification: #{theme.theme}")
+  end
+
   defp subscribe_to_signals do
     InterviewBus.subscribe("interview.utterance.**")
+    # AGENT-TO-AGENT: Subscribe to engagement alerts from Engagement Monitor
+    InterviewBus.subscribe("engagement.alert.broadcast")
+    InterviewBus.subscribe("observer.status.engagement")
   end
 
   defp via_tuple(session_id) do
@@ -346,5 +460,55 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
       model: "meta-llama/llama-4-scout-17b-16e-instruct",
       temperature: 0.3
     }
+  end
+
+  # CONSENSUS MECHANISM: Evaluate readiness for phase transition
+  # Returns {:ready | :not_ready | :abstain, rationale}
+  defp evaluate_transition_readiness(target_phase, state) do
+    theme_count = length(state.themes)
+    pattern_count = length(state.patterns)
+    has_conversation = length(state.conversation_buffer) > 0
+
+    case target_phase do
+      :synthesis ->
+        # For synthesis, we need substantial theme discovery
+        cond do
+          theme_count >= 3 ->
+            {:ready, "Identified #{theme_count} themes - sufficient for synthesis"}
+          theme_count >= 1 and pattern_count >= 1 ->
+            {:ready, "Found #{theme_count} themes and #{pattern_count} patterns - ready for synthesis"}
+          has_conversation and theme_count == 0 ->
+            {:not_ready, "No themes discovered yet - need more analysis before synthesis"}
+          true ->
+            {:abstain, "Insufficient data to make a recommendation"}
+        end
+
+      :closing ->
+        # For closing, we should have completed our analysis
+        if theme_count >= 2 or (theme_count >= 1 and state.engagement_level == :critical) do
+          {:ready, "Theme analysis complete (#{theme_count} themes) - ready to close"}
+        else
+          {:abstain, "Deferring to other agents on closing decision"}
+        end
+
+      :core_questions ->
+        # Transitioning to core questions - we're ready if we have any conversation context
+        if has_conversation do
+          {:ready, "Ready to analyze core question responses"}
+        else
+          {:ready, "Ready to begin analysis"}
+        end
+
+      :probing ->
+        # For probing phase, check if we've found interesting threads to explore
+        if theme_count >= 1 do
+          {:ready, "Themes discovered that could benefit from probing"}
+        else
+          {:abstain, "No strong opinion on probing transition"}
+        end
+
+      _ ->
+        {:abstain, "No specific readiness criteria for #{target_phase}"}
+    end
   end
 end
