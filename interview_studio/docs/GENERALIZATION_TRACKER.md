@@ -244,7 +244,7 @@ for transition validation if needed in the future.
 - [x] Director uses dynamic phases (via existing `Phases.core_categories()` call)
 - [x] FSM: N/A (no separate FSM file; transitions handled in Director)
 - [x] Compilation successful
-- [ ] Commit, push, deploy
+- [x] Commit, push, deploy (commit 68c941e)
 - [ ] Compact conversation
 
 ---
