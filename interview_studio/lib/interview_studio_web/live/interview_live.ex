@@ -10,9 +10,30 @@ defmodule InterviewStudioWeb.InterviewLive do
   alias InterviewStudio.InterviewBus
 
   @impl true
-  def mount(_params, _session, socket) do
-    # Start a new session
-    {:ok, session_id} = Session.start_session()
+  def mount(_params, browser_session, socket) do
+    # Check if we have an existing session from browser session
+    existing_session_id = browser_session["interview_session_id"]
+
+    {session_id, is_new} = case existing_session_id do
+      nil ->
+        {:ok, new_id} = Session.start_session()
+        {new_id, true}
+      id ->
+        # Check if the session is still alive
+        case Session.get_session_state(id) do
+          %{agent_status: status} when is_map(status) ->
+            if status[:director] do
+              {id, false}
+            else
+              # Session exists but agents are dead, restart
+              {:ok, new_id} = Session.start_session()
+              {new_id, true}
+            end
+          _ ->
+            {:ok, new_id} = Session.start_session()
+            {new_id, true}
+        end
+    end
 
     # Subscribe to signals for this session
     if connected?(socket) do
@@ -21,18 +42,51 @@ defmodule InterviewStudioWeb.InterviewLive do
       InterviewBus.subscribe("observer.**")
     end
 
-    # Auto-start the interview
-    send(self(), :start_interview)
+    # Only auto-start if this is a new session
+    if is_new do
+      send(self(), :start_interview)
+    end
+
+    # Restore messages from scribe if resuming
+    messages = if not is_new do
+      restore_messages_from_scribe(session_id)
+    else
+      []
+    end
+
+    phase = if not is_new do
+      Session.current_phase(session_id) || :preparation
+    else
+      :preparation
+    end
 
     {:ok, assign(socket,
       session_id: session_id,
-      messages: [],
+      messages: messages,
       input_value: "",
-      loading: true,
-      phase: :preparation,
-      interview_complete: false,
+      loading: is_new,
+      phase: phase,
+      interview_complete: phase == :closing,
       agent_signals: []
     )}
+  end
+
+  defp restore_messages_from_scribe(session_id) do
+    try do
+      case InterviewStudio.Agents.Scribe.get_transcript(session_id) do
+        {:ok, transcript} when is_list(transcript) ->
+          Enum.map(transcript, fn entry ->
+            %{
+              role: entry.role,
+              content: entry.content,
+              timestamp: entry.timestamp || DateTime.utc_now()
+            }
+          end)
+        _ -> []
+      end
+    rescue
+      _ -> []
+    end
   end
 
   @impl true
@@ -169,8 +223,9 @@ defmodule InterviewStudioWeb.InterviewLive do
   end
 
   @impl true
-  def terminate(_reason, socket) do
-    Session.stop_session(socket.assigns.session_id)
+  def terminate(_reason, _socket) do
+    # Don't stop the session on navigation - let it persist
+    # Session will be cleaned up on explicit reset or timeout
     :ok
   end
 
@@ -325,6 +380,8 @@ defmodule InterviewStudioWeb.InterviewLive do
       String.contains?(type, "insight.pattern") -> "text-purple-300"
       String.contains?(type, "suggestion.probe") -> "text-yellow-400"
       String.contains?(type, "status.engagement") -> "text-orange-400"
+      String.contains?(type, "status.frustration") -> "text-pink-400"
+      String.contains?(type, "status.timer") -> "text-cyan-400"
       String.contains?(type, "record.quote") -> "text-green-400"
       String.contains?(type, "record.summary") -> "text-green-300"
       String.contains?(type, "phase.entered") -> "text-blue-400"
@@ -339,6 +396,8 @@ defmodule InterviewStudioWeb.InterviewLive do
       String.contains?(type, "insight.pattern") -> "Story Analyst"
       String.contains?(type, "suggestion.probe") -> "Probe Coach"
       String.contains?(type, "status.engagement") -> "Engagement Monitor"
+      String.contains?(type, "status.frustration") -> "Sentiment"
+      String.contains?(type, "status.timer") -> "Timer"
       String.contains?(type, "record.quote") -> "Scribe"
       String.contains?(type, "record.summary") -> "Scribe"
       String.contains?(type, "phase.entered") -> "Director"
@@ -379,6 +438,22 @@ defmodule InterviewStudioWeb.InterviewLive do
           :critical -> "We might be losing them"
           _ -> "Watching engagement levels"
         end
+
+      # Frustration detection
+      String.contains?(type, "status.frustration") ->
+        level = Map.get(data, :level, :none)
+        case level do
+          :high -> "User seems frustrated - time to change approach"
+          :moderate -> "Some irritation detected - move on"
+          :mild -> "User may be getting impatient"
+          _ -> "Sentiment is neutral"
+        end
+
+      # Timer updates
+      String.contains?(type, "status.timer") ->
+        minutes = Map.get(data, :elapsed_minutes, 0)
+        recommendation = Map.get(data, :recommendation, "")
+        "#{Float.round(minutes, 0)} min - #{recommendation}"
 
       # Notable quote
       String.contains?(type, "record.quote") ->

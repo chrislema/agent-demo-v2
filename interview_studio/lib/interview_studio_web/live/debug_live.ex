@@ -355,7 +355,9 @@ defmodule InterviewStudioWeb.DebugLive do
                   {"Director", "director", "blue"},
                   {"Story Analyst", "story_analyst", "purple"},
                   {"Probe Coach", "probe_coach", "yellow"},
-                  {"Engagement Monitor", "engagement_monitor", "red"}
+                  {"Engagement Monitor", "engagement_monitor", "red"},
+                  {"Timer", "timer_agent", "cyan"},
+                  {"Sentiment", "sentiment_agent", "pink"}
                 ] do %>
                   <div class="flex items-center gap-2">
                     <!-- Pulsing indicator when agent is active -->

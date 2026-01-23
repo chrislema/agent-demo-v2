@@ -35,7 +35,9 @@ defmodule InterviewStudio.Agents.Director do
     :llm_config,
     :synthesis_delivered,
     :user_responded_to_synthesis,
-    :last_insights          # Most recent insights from parallel analysis
+    :last_insights,         # Most recent insights from parallel analysis
+    :questions_asked,       # Track questions to prevent repetition
+    :frustration_level      # Track user frustration from sentiment agent
   ]
 
   # Client API
@@ -106,7 +108,9 @@ defmodule InterviewStudio.Agents.Director do
       llm_config: llm_config,
       synthesis_delivered: false,
       user_responded_to_synthesis: false,
-      last_insights: %{}
+      last_insights: %{},
+      questions_asked: [],
+      frustration_level: :none
     }
 
     # Subscribe to relevant signals
@@ -194,7 +198,10 @@ defmodule InterviewStudio.Agents.Director do
       | state.conversation_history
     ]
 
-    {:reply, :ok, %{state | conversation_history: new_history}}
+    # Track question to prevent repetition (keep last 20)
+    questions_asked = [message | state.questions_asked] |> Enum.take(20)
+
+    {:reply, :ok, %{state | conversation_history: new_history, questions_asked: questions_asked}}
   end
 
   @impl true
@@ -329,6 +336,21 @@ defmodule InterviewStudio.Agents.Director do
     %{state | engagement_level: level}
   end
 
+  # Handle frustration detection from Sentiment Agent
+  defp handle_signal(%{type: "observer.status.frustration"} = signal, state) do
+    level = signal.data.level
+    Logger.info("[Director] Frustration detected: #{level}")
+    %{state | frustration_level: level}
+  end
+
+  # Handle timer signals
+  defp handle_signal(%{type: "observer.status.timer"} = signal, state) do
+    elapsed_minutes = signal.data.elapsed_minutes
+    Logger.debug("[Director] Timer update: #{elapsed_minutes} minutes elapsed")
+    # Timer info can influence pacing decisions
+    state
+  end
+
   defp handle_signal(_signal, state), do: state
 
   # Wrap-up detection - check user message directly for wrap-up cues
@@ -387,6 +409,15 @@ defmodule InterviewStudio.Agents.Director do
           to_phase: :closing,
           reason: "Engagement dropped to critical level",
           consensus_override: :critical_engagement
+        }
+
+      # High frustration - move toward synthesis/closing
+      state.frustration_level == :high and state.current_phase not in [:synthesis, :closing] ->
+        %{
+          type: :transition,
+          to_phase: :synthesis,
+          reason: "User frustration detected - moving to synthesis",
+          consensus_override: :frustration_detected
         }
 
       # In preparation - auto-advance to opening (no consensus needed)
@@ -829,23 +860,34 @@ defmodule InterviewStudio.Agents.Director do
     topics_explored = state.topics_explored |> Enum.map(&Atom.to_string/1) |> Enum.join(", ")
     topics_remaining = state.topics_to_explore |> Enum.map(&Atom.to_string/1) |> Enum.join(", ")
 
+    questions_asked = format_questions_asked(state.questions_asked)
+
     """
     You are a warm, skilled interviewer conducting a "Story of You" interview.
-    Your goal is to discover what makes this person unique and amazing, to create a compelling article about them.
+    Your goal is to discover what makes this person unique and craft a compelling written piece about them - their background, journey, what drives them, and what sets them apart.
+
+    CRITICAL INTERVIEW RULES:
+    1. NEVER repeat a question you've already asked, even rephrased
+    2. When someone gives a brief answer ("nope", "not really", a short sentence), ACCEPT IT and move to a new topic
+    3. Don't push for "deeper" answers - take what they give you and keep the conversation flowing
+    4. If they seem frustrated or say things like "I already answered that", immediately apologize briefly and move on
+    5. Your job is to gather their story, not to extract confessions - respect their boundaries
 
     Interview Style:
-    - Be genuinely curious and engaged
-    - Ask follow-up questions naturally
-    - Acknowledge and validate what they share
-    - Keep responses concise (2-3 sentences max)
+    - Be genuinely curious but not pushy
+    - Keep responses concise (1-2 sentences max)
     - Be conversational, not formal
-    - NEVER ask generic questions - always reference specific things they've shared
+    - Reference specific things they've shared
+    - Move forward, don't circle back
 
     Current phase: #{state.current_phase}
     Topics explored: #{if topics_explored == "", do: "none yet", else: topics_explored}
     Topics remaining: #{if topics_remaining == "", do: "none", else: topics_remaining}
 
-    Themes discovered by Story Analyst:
+    Questions you've already asked (DO NOT repeat these):
+    #{questions_asked}
+
+    Themes discovered:
     #{themes_text}
 
     Always respond in first person as the interviewer. Never break character.
@@ -875,10 +917,12 @@ defmodule InterviewStudio.Agents.Director do
     themes = context[:themes] || context.themes || []
     probes = context[:probes] || context.probes || []
     engagement = context[:engagement] || context.engagement || :medium
+    frustration = state.frustration_level || :none
 
     themes_text = format_themes_for_prompt(themes)
     probes_text = format_probes_for_prompt(probes)
     engagement_guidance = engagement_to_guidance(engagement)
+    frustration_guidance = frustration_to_guidance(frustration)
     topic_description = topic_to_description(topic)
 
     """
@@ -896,6 +940,9 @@ defmodule InterviewStudio.Agents.Director do
     ENGAGEMENT LEVEL: #{engagement}
     #{engagement_guidance}
 
+    SENTIMENT STATUS: #{frustration}
+    #{frustration_guidance}
+
     === YOUR TASK ===
 
     Generate a question about: #{topic_description}
@@ -904,9 +951,10 @@ defmodule InterviewStudio.Agents.Director do
     1. The question MUST reference specific details from the conversation
     2. If themes were discovered, weave them into your question
     3. If probes were suggested, consider incorporating their insights
-    4. Match the question depth to the engagement level
+    4. Match the question depth to the engagement AND sentiment level
     5. DO NOT ask generic questions - be specific to what this person has shared
     6. The question should feel like a natural continuation of the conversation
+    7. If sentiment shows ANY frustration, move to a COMPLETELY DIFFERENT topic
 
     BAD EXAMPLE (generic): "What drives you in your work?"
     GOOD EXAMPLE (specific): "You mentioned your brother was the 'smart one' - I'm curious how that dynamic shaped your approach to building your company..."
@@ -1003,6 +1051,17 @@ defmodule InterviewStudio.Agents.Director do
   end
   defp engagement_to_guidance(_), do: "Adjust your approach based on the conversation flow."
 
+  defp frustration_to_guidance(:high) do
+    "CRITICAL: User is frustrated. Briefly acknowledge this ('I appreciate your patience') and ask about something COMPLETELY DIFFERENT. Do NOT revisit any previous topics."
+  end
+  defp frustration_to_guidance(:moderate) do
+    "User seems a bit irritated. Accept whatever they've shared, don't push for more depth, and pivot to a fresh topic they haven't discussed yet."
+  end
+  defp frustration_to_guidance(:mild) do
+    "User may be getting impatient. Keep your question short and move the conversation forward. Don't circle back."
+  end
+  defp frustration_to_guidance(_), do: "Sentiment is neutral - proceed normally."
+
   defp topic_to_description(:origin), do: "their ORIGIN STORY - background, how they got started, where they came from"
   defp topic_to_description(:passion), do: "their PASSION - what drives them, what they care deeply about"
   defp topic_to_description(:differentiation), do: "what makes them UNIQUE - their distinctive approach or perspective"
@@ -1018,6 +1077,16 @@ defmodule InterviewStudio.Agents.Director do
       role = if msg.role == :user, do: "User", else: "Interviewer"
       "#{role}: #{msg.content}"
     end)
+    |> Enum.join("\n")
+  end
+
+  defp format_questions_asked(nil), do: "None yet."
+  defp format_questions_asked([]), do: "None yet."
+  defp format_questions_asked(questions) do
+    questions
+    |> Enum.take(10)
+    |> Enum.with_index(1)
+    |> Enum.map(fn {q, i} -> "#{i}. #{String.slice(q, 0, 100)}..." end)
     |> Enum.join("\n")
   end
 

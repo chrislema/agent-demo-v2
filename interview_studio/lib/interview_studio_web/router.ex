@@ -17,9 +17,12 @@ defmodule InterviewStudioWeb.Router do
   scope "/", InterviewStudioWeb do
     pipe_through :browser
 
-    live "/", InterviewLive
-    live "/interview", InterviewLive
-    live "/debug", DebugLive
+    # Share session state between interview and debug pages
+    live_session :interview, on_mount: [] do
+      live "/", InterviewLive
+      live "/interview", InterviewLive
+      live "/debug", DebugLive
+    end
   end
 
   # Other scopes may use custom stacks.

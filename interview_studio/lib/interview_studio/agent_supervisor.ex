@@ -15,7 +15,7 @@ defmodule InterviewStudio.AgentSupervisor do
   use DynamicSupervisor
   require Logger
 
-  alias InterviewStudio.Agents.{Director, Scribe, StoryAnalyst, ProbeCoach, EngagementMonitor}
+  alias InterviewStudio.Agents.{Director, Scribe, StoryAnalyst, ProbeCoach, EngagementMonitor, TimerAgent, SentimentAgent}
   alias InterviewStudio.Pipeline.InterviewFSM
 
   def start_link(init_arg) do
@@ -48,7 +48,9 @@ defmodule InterviewStudio.AgentSupervisor do
       {:scribe, fn -> start_child(Scribe, session_id: session_id) end},
       {:story_analyst, fn -> start_child(StoryAnalyst, session_id: session_id, llm_config: llm_config) end},
       {:probe_coach, fn -> start_child(ProbeCoach, session_id: session_id, llm_config: llm_config) end},
-      {:engagement_monitor, fn -> start_child(EngagementMonitor, session_id: session_id) end}
+      {:engagement_monitor, fn -> start_child(EngagementMonitor, session_id: session_id) end},
+      {:timer_agent, fn -> start_child(TimerAgent, session_id: session_id) end},
+      {:sentiment_agent, fn -> start_child(SentimentAgent, session_id: session_id) end}
     ]
 
     results = Enum.map(agent_specs, fn {name, start_fn} ->
@@ -97,7 +99,7 @@ defmodule InterviewStudio.AgentSupervisor do
   Stop all agents for a session.
   """
   def stop_session_agents(session_id) do
-    agent_types = [:fsm, :director, :scribe, :story_analyst, :probe_coach, :engagement_monitor]
+    agent_types = [:fsm, :director, :scribe, :story_analyst, :probe_coach, :engagement_monitor, :timer_agent, :sentiment_agent]
 
     Enum.each(agent_types, fn type ->
       case Registry.lookup(InterviewStudio.SessionRegistry, {type, session_id}) do
@@ -132,7 +134,7 @@ defmodule InterviewStudio.AgentSupervisor do
   Get the status of all agents for a session.
   """
   def session_status(session_id) do
-    agent_types = [:fsm, :director, :scribe, :story_analyst, :probe_coach, :engagement_monitor]
+    agent_types = [:fsm, :director, :scribe, :story_analyst, :probe_coach, :engagement_monitor, :timer_agent, :sentiment_agent]
 
     Enum.map(agent_types, fn type ->
       {type, agent_alive?(session_id, type)}
@@ -169,6 +171,8 @@ defmodule InterviewStudio.AgentSupervisor do
       :story_analyst -> start_child(StoryAnalyst, session_id: session_id, llm_config: llm_config)
       :probe_coach -> start_child(ProbeCoach, session_id: session_id, llm_config: llm_config)
       :engagement_monitor -> start_child(EngagementMonitor, session_id: session_id)
+      :timer_agent -> start_child(TimerAgent, session_id: session_id)
+      :sentiment_agent -> start_child(SentimentAgent, session_id: session_id)
       _ -> {:error, :unknown_agent_type}
     end
   end
