@@ -351,7 +351,8 @@ defmodule InterviewStudio.Testing.FeedbackLoop.Evaluator do
       "closing" => []
     }
 
-    sequence = transitions.sequence
+    # Normalize sequence to strings for comparison
+    sequence = Enum.map(transitions.sequence, &to_string/1)
 
     invalid_transitions =
       sequence
@@ -584,16 +585,19 @@ defmodule InterviewStudio.Testing.FeedbackLoop.Evaluator do
   end
 
   defp validate_phase_sequence(sequence) do
+    # Normalize to strings for comparison
+    normalized = Enum.map(sequence, &to_string/1)
+
     # Check that it starts correctly
     starts_correctly =
-      case sequence do
+      case normalized do
         [first | _] when first in ["preparation", "opening"] -> true
         _ -> false
       end
 
     # Check no backwards jumps to preparation/opening
     no_backwards_jumps =
-      sequence
+      normalized
       |> Enum.with_index()
       |> Enum.all?(fn {phase, idx} ->
         case phase do
