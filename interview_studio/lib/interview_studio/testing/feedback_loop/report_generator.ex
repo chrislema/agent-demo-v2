@@ -148,7 +148,7 @@ defmodule InterviewStudio.Testing.FeedbackLoop.ReportGenerator do
 
       """
         #{humanize(persona)}:
-          Runs: #{data.count}, Avg Score: #{Float.round(agg.avg_score, 1)}, Issues: #{agg.total_issues}
+          Runs: #{data.count}, Avg Score: #{Float.round(agg.avg_score * 1.0, 1)}, Issues: #{agg.total_issues}
       """
     end)
     |> Enum.join("")
@@ -312,7 +312,7 @@ defmodule InterviewStudio.Testing.FeedbackLoop.ReportGenerator do
       </div>
       <div class="card #{score_class}">
         <h3>Average Score</h3>
-        <div class="value">#{Float.round(agg.avg_score, 1)}</div>
+        <div class="value">#{Float.round(agg.avg_score * 1.0, 1)}</div>
       </div>
       <div class="card">
         <h3>Duration</h3>
@@ -324,7 +324,7 @@ defmodule InterviewStudio.Testing.FeedbackLoop.ReportGenerator do
       </div>
       <div class="card">
         <h3>Avg Exchanges</h3>
-        <div class="value">#{Float.round(agg.avg_exchanges, 1)}</div>
+        <div class="value">#{Float.round(agg.avg_exchanges * 1.0, 1)}</div>
       </div>
     </div>
     """
@@ -340,7 +340,7 @@ defmodule InterviewStudio.Testing.FeedbackLoop.ReportGenerator do
       </div>
       <div class="card">
         <h3>Average Score</h3>
-        <div class="value">#{Float.round(agg.avg_score, 1)}</div>
+        <div class="value">#{Float.round(agg.avg_score * 1.0, 1)}</div>
       </div>
       <div class="card">
         <h3>Max Score</h3>
@@ -417,7 +417,7 @@ defmodule InterviewStudio.Testing.FeedbackLoop.ReportGenerator do
             </div>
             <div class="persona-stat">
               <label>Avg Score</label>
-              <div class="value">#{Float.round(agg.avg_score, 1)}</div>
+              <div class="value">#{Float.round(agg.avg_score * 1.0, 1)}</div>
             </div>
             <div class="persona-stat">
               <label>Issues</label>
@@ -425,7 +425,7 @@ defmodule InterviewStudio.Testing.FeedbackLoop.ReportGenerator do
             </div>
             <div class="persona-stat">
               <label>Avg Exchanges</label>
-              <div class="value">#{Float.round(agg.avg_exchanges, 1)}</div>
+              <div class="value">#{Float.round(agg.avg_exchanges * 1.0, 1)}</div>
             </div>
           </div>
         </div>
