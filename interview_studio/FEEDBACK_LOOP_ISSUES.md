@@ -1,7 +1,7 @@
 # Feedback Loop Issues to Fix
 
 Created: 2026-01-24
-Status: Ready for implementation
+Status: In progress (Issue 1 fixed)
 
 ## Summary
 
@@ -9,26 +9,26 @@ Ran automated feedback loop with 3 personas (cooperative, terse, frustrated). Fo
 
 ---
 
-## Issue 1: Phase Tracking Returns :unknown
+## Issue 1: Phase Tracking Returns :unknown - FIXED
 
-**Priority: High**
+**Priority: High** | **Status: FIXED** (2026-01-24)
 
-All phases show as `:unknown` instead of actual phases (opening, core_questions, probing, etc.)
+**Root causes found:**
+1. `Session.current_phase/1` returned raw atom, but `ConversationRunner` expected `{:ok, phase}` tuple
+2. `SignalAnalyzer` looked for `data["phase"]` but FSM publishes `data["phase_name"]`
+3. Evaluator compared atoms against string keys in validation logic
 
-**Evidence:**
-- `phase: :unknown` for all exchanges
-- `sequence: ["unknown", "unknown", "unknown", "unknown"]`
-- 6 "Poor Phase Transitions" issues detected
+**Fixes applied:**
+- `lib/interview_studio/session.ex` - Wrap return in `{:ok, phase}` tuple
+- `lib/interview_studio_web/live/interview_live.ex` - Handle tuple return
+- `lib/interview_studio/testing/feedback_loop/signal_analyzer.ex` - Check `phase_name` field
+- `lib/interview_studio/testing/feedback_loop/evaluator.ex` - Normalize atoms to strings
 
-**Root cause hypothesis:**
-- `ConversationRunner.get_current_phase/1` calls `Session.current_phase/1`
-- The initial "[Session started]" message may not trigger proper FSM transitions
-- FSM may not be transitioning during automated conversations
-
-**Files to check:**
-- `lib/interview_studio/testing/feedback_loop/conversation_runner.ex:185-189`
-- `lib/interview_studio/session.ex` - `current_phase/1`
-- `lib/interview_studio/pipeline/interview_fsm.ex`
+**Results after fix:**
+- Score: 85.5 → 99.0 (+13.5 points)
+- Phase transition issues: 7 → 1
+- `valid_sequence: true`
+- `sequence: [:preparation, :opening, :core_questions]`
 
 ---
 
