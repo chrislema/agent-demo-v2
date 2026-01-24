@@ -162,32 +162,38 @@ defmodule InterviewStudio.Pipeline.InterviewFSM do
   # Private functions
 
   defp do_transition(state, to_phase, reason) do
-    allowed = Map.get(@transitions, state.current_phase, [])
-
-    if to_phase in allowed do
-      Logger.info("[InterviewFSM] Transitioning from #{state.current_phase} to #{to_phase}: #{reason}")
-
-      # Record the previous phase in history
-      history_entry = %{
-        phase: state.current_phase,
-        started_at: state.phase_started_at,
-        completed_at: DateTime.utc_now(),
-        summary: reason
-      }
-
-      new_state = %{state |
-        current_phase: to_phase,
-        phase_started_at: DateTime.utc_now(),
-        phase_history: [history_entry | state.phase_history]
-      }
-
-      # Emit signals
-      emit_phase_completed(state, reason)
-      emit_phase_entered(new_state)
-
-      {:ok, new_state}
+    # Allow idempotent transitions (staying in the same phase)
+    if state.current_phase == to_phase do
+      Logger.debug("[InterviewFSM] Already in #{to_phase}, ignoring transition request")
+      {:ok, state}
     else
-      {:error, "Invalid transition from #{state.current_phase} to #{to_phase}"}
+      allowed = Map.get(@transitions, state.current_phase, [])
+
+      if to_phase in allowed do
+        Logger.info("[InterviewFSM] Transitioning from #{state.current_phase} to #{to_phase}: #{reason}")
+
+        # Record the previous phase in history
+        history_entry = %{
+          phase: state.current_phase,
+          started_at: state.phase_started_at,
+          completed_at: DateTime.utc_now(),
+          summary: reason
+        }
+
+        new_state = %{state |
+          current_phase: to_phase,
+          phase_started_at: DateTime.utc_now(),
+          phase_history: [history_entry | state.phase_history]
+        }
+
+        # Emit signals
+        emit_phase_completed(state, reason)
+        emit_phase_entered(new_state)
+
+        {:ok, new_state}
+      else
+        {:error, "Invalid transition from #{state.current_phase} to #{to_phase}"}
+      end
     end
   end
 
