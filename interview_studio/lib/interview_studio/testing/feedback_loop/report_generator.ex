@@ -99,10 +99,10 @@ defmodule InterviewStudio.Testing.FeedbackLoop.ReportGenerator do
 
   defp scores_section(agg) do
     """
-    Average Score:     #{Float.round(agg.avg_score, 1)}
+    Average Score:     #{Float.round(agg.avg_score * 1.0, 1)}
     Min Score:         #{agg.min_score}
     Max Score:         #{agg.max_score}
-    Avg Exchanges:     #{Float.round(agg.avg_exchanges, 1)}
+    Avg Exchanges:     #{Float.round(agg.avg_exchanges * 1.0, 1)}
     Avg Duration:      #{format_duration(agg.avg_duration_ms)}
     Total Issues:      #{agg.total_issues}
     """

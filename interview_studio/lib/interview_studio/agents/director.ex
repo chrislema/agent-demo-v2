@@ -1009,8 +1009,8 @@ defmodule InterviewStudio.Agents.Director do
         |> Enum.join("\n")
     end
 
-    topics_explored = state.topics_explored |> Enum.map(&Atom.to_string/1) |> Enum.join(", ")
-    topics_remaining = state.topics_to_explore |> Enum.map(&Atom.to_string/1) |> Enum.join(", ")
+    topics_explored = state.topics_explored |> Enum.map(&to_string/1) |> Enum.join(", ")
+    topics_remaining = state.topics_to_explore |> Enum.map(&to_string/1) |> Enum.join(", ")
 
     questions_asked = format_questions_asked(state.questions_asked)
 
