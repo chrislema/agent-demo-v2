@@ -1,7 +1,7 @@
 # Feedback Loop Issues to Fix
 
 Created: 2026-01-24
-Status: In progress (Issue 1 fixed)
+Status: In progress (Issues 1, 2, 3 fixed)
 
 ## Summary
 
@@ -53,26 +53,24 @@ Ran automated feedback loop with 3 personas (cooperative, terse, frustrated). Fo
 
 ---
 
-## Issue 3: Frustrated Persona Fails
+## Issue 3: Frustrated Persona Fails - FIXED
 
-**Priority: Medium**
+**Priority: Medium** | **Status: FIXED** (2026-01-24)
 
-Frustrated persona conversation failed with process_message error
+**Root causes found:**
+1. FSM didn't allow idempotent transitions (closing → closing failed with "Invalid transition")
+2. Race condition: FSM shutting down while transition call still in progress
+3. Session.do_transition didn't handle EXIT:shutdown gracefully
 
-**Evidence:**
-- 1 of 3 runs failed
-- Error: `Process Message Failed: 1`
-- Score: 0 for frustrated persona
+**Fixes applied:**
+- `lib/interview_studio/pipeline/interview_fsm.ex` - Allow idempotent transitions (same phase → same phase is no-op)
+- `lib/interview_studio/session.ex` - Catch EXIT:shutdown in do_transition, treat as success during cleanup
 
-**Root cause hypothesis:**
-- Short, hostile responses may trigger edge cases
-- Null/empty handling issues in agents
-- SentimentAgent or EngagementMonitor may not handle frustration correctly
-
-**Files to check:**
-- `lib/interview_studio/agents/sentiment_agent.ex`
-- `lib/interview_studio/agents/engagement_monitor.ex`
-- `lib/interview_studio/session.ex` - error handling
+**Results after fix:**
+- Frustrated persona correctly transitions: preparation → opening → core_questions → synthesis → closing
+- Frustration detection working: mild → moderate escalation tracked
+- End intent properly triggers graceful closing
+- Note: OOM on small VMs is a separate resource concern (increase memory if needed)
 
 ---
 
