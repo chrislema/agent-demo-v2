@@ -102,7 +102,8 @@ defmodule InterviewStudio.Testing.FeedbackLoop.SignalAnalyzer do
         data = get_signal_data(sig)
 
         %{
-          phase: data["phase"] || data[:phase],
+          # FSM publishes phase_name, also check phase for compatibility
+          phase: data["phase_name"] || data[:phase_name] || data["phase"] || data[:phase],
           reason: data["reason"] || data[:reason],
           timestamp: get_timestamp(sig)
         }
@@ -333,7 +334,8 @@ defmodule InterviewStudio.Testing.FeedbackLoop.SignalAnalyzer do
     |> Enum.sort_by(&get_timestamp/1, DateTime)
     |> Enum.map(fn sig ->
       data = get_signal_data(sig)
-      data["phase"] || data[:phase] || "unknown"
+      # FSM publishes phase_name, also check phase for compatibility
+      data["phase_name"] || data[:phase_name] || data["phase"] || data[:phase] || "unknown"
     end)
   end
 
