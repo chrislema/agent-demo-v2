@@ -55,7 +55,10 @@ defmodule InterviewStudioWeb.InterviewLive do
     end
 
     phase = if not is_new do
-      Session.current_phase(session_id) || :preparation
+      case Session.current_phase(session_id) do
+        {:ok, p} -> p
+        _ -> :preparation
+      end
     else
       :preparation
     end
