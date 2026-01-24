@@ -352,19 +352,46 @@ defmodule InterviewStudio.Session do
   end
 
   defp do_transition(session_id, %{to_phase: phase, reason: reason} = _action) do
-    case InterviewFSM.transition(session_id, phase, reason) do
+    # Handle race condition: FSM might be shutting down during cleanup
+    # This is not an error - it means the session is already being closed
+    result = try do
+      InterviewFSM.transition(session_id, phase, reason)
+    catch
+      :exit, {:shutdown, _} ->
+        Logger.debug("[Session] FSM shutting down during transition to #{phase} - session closing")
+        {:ok, phase}
+      :exit, :shutdown ->
+        Logger.debug("[Session] FSM shutdown during transition to #{phase} - session closing")
+        {:ok, phase}
+      :exit, {:noproc, _} ->
+        Logger.debug("[Session] FSM not found during transition to #{phase} - session already closed")
+        {:ok, phase}
+    end
+
+    case result do
       {:ok, ^phase} ->
         # Sync Director's phase immediately (don't wait for async signal)
-        Director.set_phase(session_id, phase)
+        try do
+          Director.set_phase(session_id, phase)
+        catch
+          :exit, _ -> :ok  # Director might also be shutting down
+        end
 
         # After transitioning, get the next action (question/probe/etc)
         # This ensures we ask the first question after entering a new phase
         if phase in [:opening, :core_questions, :probing, :synthesis, :closing] do
-          action = Director.get_next_action(session_id)
-          handle_action(session_id, action)
+          try do
+            action = Director.get_next_action(session_id)
+            handle_action(session_id, action)
+          catch
+            :exit, _ -> {:ok, nil}  # Session closing, no more actions needed
+          end
         else
           {:ok, nil}
         end
+      {:ok, _other_phase} ->
+        # Already in a different phase (idempotent transition returned current state)
+        {:ok, nil}
       {:error, err} ->
         {:error, err}
     end
