@@ -1,0 +1,50 @@
+# Interview Domain - Action Configuration
+# Phase 4: True Domain-Agnostic Architecture
+#
+# Defines action types, handlers, and fallback behaviors.
+
+action_types:
+  transition:
+    handler: handle_transition
+    description: "Transition the session to a new phase"
+
+  ask:
+    handler: handle_ask
+    description: "Ask a scripted question from the question bank"
+    fallback_behavior: use_raw_question
+
+  ask_dynamic:
+    handler: handle_ask_dynamic
+    description: "Generate a dynamic question based on collective agent intelligence"
+    topic_fallbacks:
+      origin: "I'd love to hear about your background - how did you get to where you are today?"
+      passion: "What drives you? What are you most passionate about in your work?"
+      differentiation: "What would you say makes your approach or perspective unique?"
+      moments: "Was there a pivotal moment or turning point that really shaped who you've become?"
+      vision: "Where are you headed? What's the vision you're working toward?"
+      default: "Tell me more about that - I'd love to hear your thoughts."
+
+  probe:
+    handler: handle_probe
+    description: "Ask a follow-up probe question"
+    fallback_behavior: use_suggested_question
+
+  synthesize:
+    handler: handle_synthesize
+    description: "Summarize themes and patterns discovered"
+    fallback_message: "I've really enjoyed learning about you. Let me share what I've heard..."
+
+  close:
+    handler: handle_close
+    description: "Thank the user and wrap up the interview"
+    fallback_message: "Thank you so much for sharing your story with me. This has been wonderful!"
+
+  wait:
+    handler: handle_wait
+    description: "No action needed - wait for more input"
+
+# Default timeouts for action handlers
+timeouts:
+  generate_response_ms: 60000
+  get_next_action_ms: 30000
+  gather_insights_ms: 4000

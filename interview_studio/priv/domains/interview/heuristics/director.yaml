@@ -1,0 +1,129 @@
+# Director Agent - Heuristics Configuration
+# Phase 4: True Domain-Agnostic Architecture
+#
+# Contains topic descriptions, keywords, and guidance text for the Director agent.
+
+# Topic descriptions for LLM prompts
+topic_descriptions:
+  origin: "their ORIGIN STORY - their professional journey, how they got into this field, the path that led them here"
+  passion: "their PASSION - what drives them, what they care deeply about"
+  differentiation: "what makes them UNIQUE - their distinctive approach or perspective"
+  moments: "PIVOTAL MOMENTS - turning points that shaped who they became"
+  vision: "their VISION - where they're headed, what they're working toward"
+
+# Keywords to map themes to topics
+# NOTE: "childhood", "grew up", "early" removed from origin - these pull adults backward
+# Origin is about professional/career beginnings, not childhood
+topic_keywords:
+  origin:
+    - background
+    - start
+    - began
+    - journey
+    - path
+    - career
+    - how you got here
+    - first job
+    - started out
+  passion:
+    - love
+    - passion
+    - drive
+    - motivate
+    - care about
+    - excited
+    - energy
+    - fulfilling
+  differentiation:
+    - unique
+    - different
+    - approach
+    - perspective
+    - style
+    - stand out
+    - special
+  moments:
+    - moment
+    - turning point
+    - pivotal
+    - changed
+    - realized
+    - breakthrough
+    - milestone
+  vision:
+    - future
+    - goal
+    - vision
+    - next
+    - working toward
+    - dream
+    - aspiration
+    - building
+
+# Probe-related topic keywords (for find_probe_related_topic)
+probe_topic_keywords:
+  origin:
+    - background
+    - start
+    - how
+    - where
+  passion:
+    - why
+    - love
+    - passion
+    - drive
+  differentiation:
+    - unique
+    - different
+    - approach
+  moments:
+    - when
+    - moment
+    - turning
+    - pivotal
+  vision:
+    - future
+    - goal
+    - next
+    - plan
+
+# Engagement-based guidance for question generation
+engagement_guidance:
+  high: "User is highly engaged - lean in! Ask deeper, more probing questions."
+  medium: "User engagement is moderate - balance depth with accessibility."
+  low: "User engagement is lower - keep it lighter."
+  critical: "User seems ready to wrap up - respect their energy."
+  default: "Adjust your approach based on the conversation flow."
+
+# Frustration-based guidance
+frustration_guidance:
+  high: "CRITICAL: User is frustrated. Ask about something COMPLETELY DIFFERENT."
+  moderate: "User seems a bit irritated. Pivot to a fresh topic."
+  mild: "User may be getting impatient. Keep your question short."
+  none: "Sentiment is neutral - proceed normally."
+  default: "Sentiment is neutral - proceed normally."
+
+# Chronological direction guidance
+chronological_guidance:
+  forward: "User is talking about future/current work - RESPECT THIS MOMENTUM."
+  backward: "User is discussing their past. Look for opportunities to bridge to the present/future."
+  neutral: "No strong chronological preference - follow the natural flow of conversation."
+
+# Forward-looking topics (for momentum-respecting selection)
+forward_topics:
+  - vision
+  - passion
+  - differentiation
+
+# Timeouts and thresholds
+timeouts:
+  generate_response_ms: 60000
+  get_next_action_ms: 30000
+  poll_transition_ms: 10000
+  check_consensus_ms: 10000
+
+thresholds:
+  max_recent_questions: 20
+  max_themes: 10
+  max_probes: 5
+  recent_history_count: 5

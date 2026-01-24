@@ -2,6 +2,10 @@ defmodule InterviewStudio.Session do
   @moduledoc """
   Session manager - coordinates all agents for an interview session.
 
+  Phase 4: Domain-Agnostic Architecture
+  - Uses DomainLoader to get action configurations
+  - Fallback text comes from YAML config, not hardcoded values
+
   Responsibilities:
   - Start/stop FSM, Director, and all observers together
   - Provide unified API for session management
@@ -15,15 +19,22 @@ defmodule InterviewStudio.Session do
   alias InterviewStudio.InterviewBus
   alias InterviewStudio.Performance
   alias InterviewStudio.AgentSupervisor
+  alias InterviewStudio.DomainLoader
 
   @doc """
   Start a new interview session with all agents.
   Returns {:ok, session_id} or {:error, reason}
+
+  Options:
+  - :session_id - Custom session ID (default: generated)
+  - :domain - Domain name (default: "interview")
+  - :llm_config - Override LLM configuration
   """
   def start_session(opts \\ []) do
     session_id = Keyword.get(opts, :session_id, generate_session_id())
 
     # PHASE 7: Use AgentSupervisor for failure isolation
+    # PHASE 4: Pass domain option for config-driven loading
     case AgentSupervisor.start_session_agents(session_id, opts) do
       {:ok, ^session_id} ->
         Logger.info("[Session] Started session #{session_id}")
@@ -98,7 +109,9 @@ defmodule InterviewStudio.Session do
     # MULTI-AGENT: Gather insights from all observers in parallel
     # This is the synchronization barrier - we wait for all agents before deciding
     # PHASE 7: Use 4 second timeout to leave room for response generation
-    insights = gather_insights(session_id, timeout: 4_000)
+    # PHASE 4: Get timeout from domain config if available
+    timeout = get_config_timeout(session_id, :gather_insights_ms, 4_000)
+    insights = gather_insights(session_id, timeout: timeout)
 
     # Get Director's next action, informed by agent insights
     action = Director.get_next_action(session_id, insights)
@@ -315,7 +328,27 @@ defmodule InterviewStudio.Session do
     _ -> :unknown
   end
 
-  defp handle_action(session_id, %{type: :transition, to_phase: phase, reason: reason}) do
+  # PHASE 4: Config-driven action dispatch
+  defp handle_action(session_id, %{type: action_type} = action) do
+    # Get domain config for action fallbacks
+    domain = DomainLoader.get_session_domain(session_id)
+    action_config = if domain, do: DomainLoader.get_action(domain, action_type), else: nil
+
+    case action_type do
+      :transition -> do_transition(session_id, action)
+      :ask -> do_ask(session_id, action, action_config)
+      :ask_dynamic -> do_ask_dynamic(session_id, action, action_config)
+      :probe -> do_probe(session_id, action, action_config)
+      :synthesize -> do_synthesize(session_id, action, action_config)
+      :close -> do_close(session_id, action, action_config)
+      :wait -> {:ok, nil}
+      _ ->
+        Logger.warning("[Session] Unknown action type: #{inspect(action)}")
+        {:ok, nil}
+    end
+  end
+
+  defp do_transition(session_id, %{to_phase: phase, reason: reason} = _action) do
     case InterviewFSM.transition(session_id, phase, reason) do
       {:ok, ^phase} ->
         # Sync Director's phase immediately (don't wait for async signal)
@@ -334,7 +367,7 @@ defmodule InterviewStudio.Session do
     end
   end
 
-  defp handle_action(session_id, %{type: :ask, question: question} = action) do
+  defp do_ask(session_id, %{question: question} = action, _action_config) do
     context = Map.take(action, [:question, :question_id, :source])
 
     case Director.generate_response(session_id, :ask, context) do
@@ -352,7 +385,7 @@ defmodule InterviewStudio.Session do
 
   # DYNAMIC QUESTION - Generated from collective agent intelligence
   # This is where multi-agent collaboration produces emergent questions
-  defp handle_action(session_id, %{type: :ask_dynamic} = action) do
+  defp do_ask_dynamic(session_id, action, action_config) do
     # Pass all context to Director for dynamic generation
     context = Map.take(action, [:topic, :themes, :probes, :engagement, :source])
 
@@ -364,16 +397,16 @@ defmodule InterviewStudio.Session do
         publish_host_utterance(response, action, session_id)
         {:ok, response}
       {:error, reason} ->
-        # Fallback: generate a basic question for the topic
+        # PHASE 4: Fallback from config
         Logger.warning("[Session] Dynamic generation failed: #{inspect(reason)}, using fallback")
-        fallback = generate_topic_fallback(action.topic)
+        fallback = get_topic_fallback(action.topic, action_config)
         Director.record_host_message(session_id, fallback)
         publish_host_utterance(fallback, action, session_id)
         {:ok, fallback}
     end
   end
 
-  defp handle_action(session_id, %{type: :probe, question: question, topic: topic}) do
+  defp do_probe(session_id, %{question: question, topic: topic} = _action, _action_config) do
     context = %{question: question, topic: topic}
 
     case Director.generate_response(session_id, :probe, context) do
@@ -388,7 +421,7 @@ defmodule InterviewStudio.Session do
     end
   end
 
-  defp handle_action(session_id, %{type: :synthesize, themes: themes}) do
+  defp do_synthesize(session_id, %{themes: themes} = _action, action_config) do
     context = %{themes: themes}
 
     case Director.generate_response(session_id, :synthesize, context) do
@@ -397,34 +430,79 @@ defmodule InterviewStudio.Session do
         publish_host_utterance(response, %{type: :synthesize}, session_id)
         {:ok, response}
       {:error, _reason} ->
-        fallback = "I've really enjoyed learning about you. Let me share what I've heard..."
+        # PHASE 4: Fallback from config
+        fallback = get_action_fallback(action_config, :fallback_message,
+          "I've really enjoyed learning about you. Let me share what I've heard...")
         Director.record_host_message(session_id, fallback)
         publish_host_utterance(fallback, %{type: :synthesize}, session_id)
         {:ok, fallback}
     end
   end
 
-  defp handle_action(session_id, %{type: :close}) do
+  defp do_close(session_id, _action, action_config) do
     case Director.generate_response(session_id, :close, %{}) do
       {:ok, response} ->
         Director.record_host_message(session_id, response)
         publish_host_utterance(response, %{type: :close}, session_id)
         {:ok, response}
       {:error, _reason} ->
-        fallback = "Thank you so much for sharing your story with me. This has been wonderful!"
+        # PHASE 4: Fallback from config
+        fallback = get_action_fallback(action_config, :fallback_message,
+          "Thank you so much for sharing your story with me. This has been wonderful!")
         Director.record_host_message(session_id, fallback)
         publish_host_utterance(fallback, %{type: :close}, session_id)
         {:ok, fallback}
     end
   end
 
-  defp handle_action(_session_id, %{type: :wait}) do
-    {:ok, nil}
+  # PHASE 4: Get topic fallback from config
+  defp get_topic_fallback(topic, nil), do: default_topic_fallback(topic)
+  defp get_topic_fallback(topic, action_config) do
+    topic_fallbacks = action_config[:topic_fallbacks] || %{}
+    Map.get(topic_fallbacks, topic) ||
+      Map.get(topic_fallbacks, :default) ||
+      default_topic_fallback(topic)
   end
 
-  defp handle_action(_session_id, action) do
-    Logger.warning("[Session] Unknown action type: #{inspect(action)}")
-    {:ok, nil}
+  # Default fallbacks (used when config not available)
+  defp default_topic_fallback(:origin) do
+    "I'd love to hear about your background - how did you get to where you are today?"
+  end
+  defp default_topic_fallback(:passion) do
+    "What drives you? What are you most passionate about in your work?"
+  end
+  defp default_topic_fallback(:differentiation) do
+    "What would you say makes your approach or perspective unique?"
+  end
+  defp default_topic_fallback(:moments) do
+    "Was there a pivotal moment or turning point that really shaped who you've become?"
+  end
+  defp default_topic_fallback(:vision) do
+    "Where are you headed? What's the vision you're working toward?"
+  end
+  defp default_topic_fallback(_topic) do
+    "Tell me more about that - I'd love to hear your thoughts."
+  end
+
+  # PHASE 4: Get action fallback from config
+  defp get_action_fallback(nil, _key, default), do: default
+  defp get_action_fallback(action_config, key, default) do
+    action_config[key] || default
+  end
+
+  # PHASE 4: Get timeout from domain config
+  defp get_config_timeout(session_id, key, default) do
+    case DomainLoader.get_session_domain(session_id) do
+      nil -> default
+      domain ->
+        action_config = DomainLoader.get_action(domain, :ask_dynamic)
+        if action_config do
+          timeouts = domain.actions[:timeouts] || %{}
+          timeouts[key] || default
+        else
+          default
+        end
+    end
   end
 
   defp publish_host_utterance(content, action, _session_id) do
@@ -465,25 +543,5 @@ defmodule InterviewStudio.Session do
 
   defp generate_session_id do
     :crypto.strong_rand_bytes(8) |> Base.url_encode64(padding: false)
-  end
-
-  # Fallback questions when dynamic generation fails
-  defp generate_topic_fallback(:origin) do
-    "I'd love to hear about your background - how did you get to where you are today?"
-  end
-  defp generate_topic_fallback(:passion) do
-    "What drives you? What are you most passionate about in your work?"
-  end
-  defp generate_topic_fallback(:differentiation) do
-    "What would you say makes your approach or perspective unique?"
-  end
-  defp generate_topic_fallback(:moments) do
-    "Was there a pivotal moment or turning point that really shaped who you've become?"
-  end
-  defp generate_topic_fallback(:vision) do
-    "Where are you headed? What's the vision you're working toward?"
-  end
-  defp generate_topic_fallback(_topic) do
-    "Tell me more about that - I'd love to hear your thoughts."
   end
 end

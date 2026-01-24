@@ -1,0 +1,103 @@
+# Interview Domain - Signal Configuration
+# Phase 4: True Domain-Agnostic Architecture
+#
+# Defines all signal types used in the interview domain.
+
+signal_types:
+  # User/Host utterances
+  user_utterance:
+    type: "interview.utterance.user"
+    source: "director"
+    description: "User message in the interview"
+
+  host_utterance:
+    type: "interview.utterance.host"
+    source: "director"
+    description: "Host/interviewer message"
+
+  # Phase signals
+  phase_entered:
+    type: "interview.phase.entered"
+    source: "fsm"
+    description: "Interview entered a new phase"
+
+  phase_completed:
+    type: "interview.phase.completed"
+    source: "fsm"
+    description: "Interview completed a phase"
+
+  # Observer insights
+  insight_theme:
+    type: "observer.insight.theme"
+    source: "story_analyst"
+    description: "Theme identified by Story Analyst"
+
+  insight_pattern:
+    type: "observer.insight.pattern"
+    source: "story_analyst"
+    description: "Story pattern identified by Story Analyst"
+
+  # Observer suggestions
+  suggestion_probe:
+    type: "observer.suggestion.probe"
+    source: "probe_coach"
+    description: "Follow-up probe suggested by Probe Coach"
+
+  # Observer status updates
+  status_engagement:
+    type: "observer.status.engagement"
+    source: "engagement_monitor"
+    description: "User engagement level update"
+
+  status_frustration:
+    type: "observer.status.frustration"
+    source: "sentiment_agent"
+    description: "User frustration level detected"
+
+  status_sentiment:
+    type: "observer.status.sentiment"
+    source: "sentiment_agent"
+    description: "Comprehensive sentiment analysis (intent, direction, frustration)"
+
+  status_timer:
+    type: "observer.status.timer"
+    source: "timer_agent"
+    description: "Timer milestone or update"
+
+  status_analyzing:
+    type: "observer.status.analyzing"
+    source: "any"
+    description: "Agent is currently analyzing"
+
+  status_complete:
+    type: "observer.status.complete"
+    source: "any"
+    description: "Agent completed analysis"
+
+  status_error:
+    type: "observer.status.error"
+    source: "any"
+    description: "Agent encountered an error"
+
+  # Agent-to-agent communication
+  theme_discovered:
+    type: "analyst.theme.discovered"
+    source: "story_analyst"
+    target: "probe_coach"
+    description: "Direct notification of theme to Probe Coach"
+
+  engagement_alert:
+    type: "engagement.alert.broadcast"
+    source: "engagement_monitor"
+    description: "Critical engagement alert"
+
+  # Director decisions
+  decision_transition:
+    type: "director.decision.transition"
+    source: "director"
+    description: "Director decided to transition phases"
+
+  consensus_disagreement:
+    type: "director.consensus.disagreement"
+    source: "director"
+    description: "Director overrode agent consensus"

@@ -2,6 +2,11 @@ defmodule InterviewStudio.Agents.SentimentAgent do
   @moduledoc """
   Sentiment Agent - monitors user messages for frustration, intent, and emotional cues.
 
+  Phase 4: Domain-Agnostic Architecture
+  - Loads heuristics from domain config (heuristics/sentiment.yaml)
+  - Intent detection phrases come from config
+  - Frustration detection phrases come from config
+
   Responsibilities:
   - Detect frustration signals in user messages using LLM understanding
   - Identify user intent: continue, change_topic, or end_interview
@@ -15,6 +20,7 @@ defmodule InterviewStudio.Agents.SentimentAgent do
 
   alias InterviewStudio.InterviewBus
   alias InterviewStudio.PromptLoader
+  alias InterviewStudio.DomainLoader
 
   defstruct [
     :session_id,
@@ -26,7 +32,9 @@ defmodule InterviewStudio.Agents.SentimentAgent do
     :consecutive_short_answers,
     :engagement_level,       # From Engagement Monitor - affects frustration escalation
     :current_phase,          # From phase changes - affects frustration tolerance
-    :llm_config              # LLM configuration for semantic analysis
+    :llm_config,             # LLM configuration for semantic analysis
+    :domain,                 # PHASE 4: Domain configuration
+    :heuristics              # PHASE 4: Agent-specific heuristics from YAML
   ]
 
   # LLM timeout for graceful degradation
@@ -65,6 +73,16 @@ defmodule InterviewStudio.Agents.SentimentAgent do
     session_id = Keyword.fetch!(opts, :session_id)
     llm_config = Keyword.get(opts, :llm_config, default_llm_config())
 
+    # PHASE 4: Get domain from opts (passed by AgentSupervisor)
+    domain = Keyword.get(opts, :domain)
+
+    # PHASE 4: Load heuristics from domain config
+    heuristics = if domain do
+      DomainLoader.get_heuristics(domain, :sentiment_agent)
+    else
+      %{}
+    end
+
     state = %__MODULE__{
       session_id: session_id,
       frustration_level: :none,
@@ -75,18 +93,35 @@ defmodule InterviewStudio.Agents.SentimentAgent do
       consecutive_short_answers: 0,
       engagement_level: :high,
       current_phase: :opening,
-      llm_config: llm_config
+      llm_config: llm_config,
+      domain: domain,
+      heuristics: heuristics
     }
 
-    # Subscribe to user messages
-    InterviewBus.subscribe("interview.utterance.user")
-    # CROSS-AGENT: Subscribe to engagement updates - when engagement drops, escalate frustration
-    InterviewBus.subscribe("observer.status.engagement")
-    # CROSS-AGENT: Subscribe to phase changes - be more lenient on frustration during closing
-    InterviewBus.subscribe("interview.phase.**")
+    # PHASE 4: Subscribe based on domain config or use defaults
+    subscribe_to_signals(domain)
 
-    Logger.info("[SentimentAgent] Started for session #{session_id}")
+    Logger.info("[SentimentAgent] Started for session #{session_id} (domain: #{domain && domain.name || "default"})")
     {:ok, state}
+  end
+
+  # PHASE 4: Subscribe to signals based on domain config or use defaults
+  defp subscribe_to_signals(nil) do
+    InterviewBus.subscribe("interview.utterance.user")
+    InterviewBus.subscribe("observer.status.engagement")
+    InterviewBus.subscribe("interview.phase.**")
+  end
+
+  defp subscribe_to_signals(domain) do
+    subscriptions = DomainLoader.get_subscriptions(domain, :sentiment_agent)
+
+    if subscriptions == [] do
+      subscribe_to_signals(nil)
+    else
+      Enum.each(subscriptions, fn pattern ->
+        InterviewBus.subscribe(pattern)
+      end)
+    end
   end
 
   @impl true
@@ -229,12 +264,14 @@ defmodule InterviewStudio.Agents.SentimentAgent do
 
       {:ok, {:error, reason}} ->
         Logger.warning("[SentimentAgent] LLM failed: #{inspect(reason)}, using fallback")
-        fallback_sentiment_analysis(message)
+        # PHASE 4: Pass heuristics for config-driven fallback
+        fallback_sentiment_analysis(message, state.heuristics || %{})
 
       nil ->
         Task.shutdown(task, :brutal_kill)
         Logger.warning("[SentimentAgent] LLM timeout, using fallback")
-        fallback_sentiment_analysis(message)
+        # PHASE 4: Pass heuristics for config-driven fallback
+        fallback_sentiment_analysis(message, state.heuristics || %{})
     end
   end
 
@@ -344,83 +381,93 @@ defmodule InterviewStudio.Agents.SentimentAgent do
     indicators
   end
 
-  # Fallback heuristic analysis when LLM is unavailable
-  defp fallback_sentiment_analysis(message) do
+  # PHASE 4: Fallback heuristic analysis using config-driven phrases
+  defp fallback_sentiment_analysis(message, heuristics) do
     downcased = String.downcase(message)
     word_count = message |> String.split() |> length()
 
-    # Detect user intent from common phrases
-    user_intent = cond do
-      String.contains?(downcased, "let's wrap") or
-      String.contains?(downcased, "i'm done") or
-      String.contains?(downcased, "let's end") or
-      String.contains?(downcased, "that's enough") ->
-        :end_interview
+    # Get config-driven phrases or use defaults
+    intent_config = heuristics[:intent_detection] || default_intent_detection()
+    frustration_config = heuristics[:frustration_phrases] || default_frustration_phrases()
+    chrono_config = heuristics[:chronological_keywords] || default_chronological_keywords()
+    thresholds = heuristics[:thresholds] || %{}
+    short_answer_words = thresholds[:short_answer_words] || 5
 
-      String.contains?(downcased, "move on") or
-      String.contains?(downcased, "different topic") or
-      String.contains?(downcased, "something else") or
-      String.contains?(downcased, "don't want to talk about") ->
-        :change_topic
+    # Detect user intent from config phrases
+    user_intent = detect_user_intent(downcased, intent_config)
 
-      true ->
-        :continue
-    end
+    # Detect frustration from config phrases
+    frustration_level = detect_frustration(downcased, frustration_config)
 
-    # Detect frustration (more conservative than before)
-    frustration_level = cond do
-      # High frustration - explicit anger/exasperation
-      String.contains?(downcased, "stop asking") or
-      String.contains?(downcased, "this is ridiculous") or
-      String.contains?(downcased, "i told you") or
-      String.contains?(downcased, "how many times") ->
-        :high
-
-      # Moderate frustration - repetition frustration
-      String.contains?(downcased, "already told") or
-      String.contains?(downcased, "already said") or
-      String.contains?(downcased, "this is repetitive") ->
-        :moderate
-
-      # Mild frustration - impatience signals
-      String.contains?(downcased, "i already") or
-      String.contains?(downcased, "you already asked") ->
-        :mild
-
-      true ->
-        :none
-    end
-
-    # Detect chronological direction
-    chronological_direction = cond do
-      String.contains?(downcased, "future") or
-      String.contains?(downcased, "goal") or
-      String.contains?(downcased, "vision") or
-      String.contains?(downcased, "career") or
-      String.contains?(downcased, "working toward") ->
-        :forward
-
-      String.contains?(downcased, "childhood") or
-      String.contains?(downcased, "grew up") or
-      String.contains?(downcased, "when i was young") or
-      String.contains?(downcased, "early years") ->
-        :backward
-
-      true ->
-        :neutral
-    end
+    # Detect chronological direction from config
+    chronological_direction = detect_chronological(downcased, chrono_config)
 
     indicators = []
     indicators = if frustration_level in [:moderate, :high], do: [:frustration_detected | indicators], else: indicators
     indicators = if user_intent == :change_topic, do: [:topic_change_requested | indicators], else: indicators
     indicators = if user_intent == :end_interview, do: [:end_requested | indicators], else: indicators
-    indicators = if word_count < 5, do: [:short_answer | indicators], else: indicators
+    indicators = if word_count < short_answer_words, do: [:short_answer | indicators], else: indicators
 
     %{
       frustration_level: frustration_level,
       user_intent: user_intent,
       chronological_direction: chronological_direction,
       indicators: indicators
+    }
+  end
+
+
+  # PHASE 4: Helper functions for config-driven detection
+
+  defp detect_user_intent(text, config) do
+    cond do
+      matches_any?(text, config[:end_interview] || []) -> :end_interview
+      matches_any?(text, config[:change_topic] || []) -> :change_topic
+      true -> :continue
+    end
+  end
+
+  defp detect_frustration(text, config) do
+    cond do
+      matches_any?(text, config[:high] || []) -> :high
+      matches_any?(text, config[:moderate] || []) -> :moderate
+      matches_any?(text, config[:mild] || []) -> :mild
+      true -> :none
+    end
+  end
+
+  defp detect_chronological(text, config) do
+    cond do
+      matches_any?(text, config[:forward] || []) -> :forward
+      matches_any?(text, config[:backward] || []) -> :backward
+      true -> :neutral
+    end
+  end
+
+  defp matches_any?(text, phrases) do
+    Enum.any?(phrases, &String.contains?(text, &1))
+  end
+
+  # Default configs for fallback
+  defp default_intent_detection do
+    %{
+      end_interview: ["let's wrap", "i'm done", "let's end", "that's enough"],
+      change_topic: ["move on", "different topic", "something else", "don't want to talk about"]
+    }
+  end
+
+  defp default_frustration_phrases do
+    %{
+      high: ["stop asking", "this is ridiculous", "i told you", "how many times"],
+      moderate: ["already told", "already said", "this is repetitive"],
+      mild: ["i already", "you already asked"]
+    }
+  end
+
+  defp default_chronological_keywords do
+    %{
+      forward: ["future", "goal", "vision", "career", "working toward"],
+      backward: ["childhood", "grew up", "when i was young", "early years"]
     }
   end
 

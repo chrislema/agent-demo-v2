@@ -2,6 +2,11 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
   @moduledoc """
   The Story Analyst Agent - extracts narrative themes and patterns.
 
+  Phase 4: Domain-Agnostic Architecture
+  - Loads heuristics from domain config (heuristics/story_analyst.yaml)
+  - Analysis thresholds come from config
+  - Transition readiness thresholds come from config
+
   Looks for:
   - Recurring themes (resilience, creativity, community, etc.)
   - Story arcs (struggle → breakthrough, passion → profession)
@@ -16,6 +21,7 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
 
   alias InterviewStudio.InterviewBus
   alias InterviewStudio.PromptLoader
+  alias InterviewStudio.DomainLoader
 
   defstruct [
     :session_id,
@@ -25,10 +31,13 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
     :analysis_count,
     :engagement_level,     # Current engagement from Engagement Monitor
     :llm_config,
-    :probe_suggestions     # Topics suggested by Probe Coach for theme prioritization
+    :probe_suggestions,    # Topics suggested by Probe Coach for theme prioritization
+    :domain,               # PHASE 4: Domain configuration
+    :heuristics            # PHASE 4: Agent-specific heuristics from YAML
   ]
 
-  @analysis_threshold 2  # Analyze every N user messages
+  # PHASE 4: Default threshold, can be overridden by config
+  @default_analysis_threshold 2
 
   # Client API
 
@@ -70,6 +79,16 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
     session_id = Keyword.fetch!(opts, :session_id)
     llm_config = Keyword.get(opts, :llm_config, default_llm_config())
 
+    # PHASE 4: Get domain from opts (passed by AgentSupervisor)
+    domain = Keyword.get(opts, :domain)
+
+    # PHASE 4: Load heuristics from domain config
+    heuristics = if domain do
+      DomainLoader.get_heuristics(domain, :story_analyst)
+    else
+      %{}
+    end
+
     state = %__MODULE__{
       session_id: session_id,
       themes: [],
@@ -78,12 +97,15 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
       analysis_count: 0,
       engagement_level: :high,
       llm_config: llm_config,
-      probe_suggestions: []
+      probe_suggestions: [],
+      domain: domain,
+      heuristics: heuristics
     }
 
-    subscribe_to_signals()
+    # PHASE 4: Subscribe based on domain config or use defaults
+    subscribe_to_signals(domain)
 
-    Logger.info("[StoryAnalyst] Started for session #{session_id}")
+    Logger.info("[StoryAnalyst] Started for session #{session_id} (domain: #{domain && domain.name || "default"})")
     {:ok, state}
   end
 
@@ -153,8 +175,15 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
     role = if String.ends_with?(signal.type, "user"), do: :user, else: :host
     content = signal.data.content
 
+    # PHASE 4: Get thresholds from heuristics config
+    thresholds = state.heuristics[:thresholds] || %{}
+    max_buffer = thresholds[:max_conversation_buffer] || 10
+    analysis_frequency = thresholds[:analysis_frequency] || @default_analysis_threshold
+    first_msg_min_length = thresholds[:first_message_min_length] || 50
+    skip_levels = thresholds[:skip_analysis_engagement_levels] || [:critical]
+
     entry = %{role: role, content: content, timestamp: DateTime.utc_now()}
-    buffer = [entry | state.conversation_buffer] |> Enum.take(10)
+    buffer = [entry | state.conversation_buffer] |> Enum.take(max_buffer)
 
     new_count = if role == :user, do: state.analysis_count + 1, else: state.analysis_count
 
@@ -163,9 +192,9 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
     # Trigger analysis periodically, or on first substantive user message
     # BUT respect engagement level - don't do deep analysis when user is disengaged
     should_analyze = role == :user and
-      state.engagement_level not in [:critical] and
-      (rem(new_count, @analysis_threshold) == 0 or
-       (new_count == 1 and String.length(content) > 50))
+      state.engagement_level not in skip_levels and
+      (rem(new_count, analysis_frequency) == 0 or
+       (new_count == 1 and String.length(content) > first_msg_min_length))
 
     if should_analyze do
       analyze_async(new_state)
@@ -480,13 +509,24 @@ defmodule InterviewStudio.Agents.StoryAnalyst do
     Logger.debug("[StoryAnalyst] -> [ProbeCoach] Theme notification: #{theme.theme}")
   end
 
-  defp subscribe_to_signals do
+  # PHASE 4: Subscribe to signals based on domain config or use defaults
+  defp subscribe_to_signals(nil) do
     InterviewBus.subscribe("interview.utterance.**")
-    # AGENT-TO-AGENT: Subscribe to engagement alerts from Engagement Monitor
     InterviewBus.subscribe("engagement.alert.broadcast")
     InterviewBus.subscribe("observer.status.engagement")
-    # CROSS-AGENT: Subscribe to Probe Coach suggestions to inform theme prioritization
     InterviewBus.subscribe("observer.suggestion.probe")
+  end
+
+  defp subscribe_to_signals(domain) do
+    subscriptions = DomainLoader.get_subscriptions(domain, :story_analyst)
+
+    if subscriptions == [] do
+      subscribe_to_signals(nil)
+    else
+      Enum.each(subscriptions, fn pattern ->
+        InterviewBus.subscribe(pattern)
+      end)
+    end
   end
 
   defp via_tuple(session_id) do

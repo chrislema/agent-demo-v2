@@ -1,0 +1,73 @@
+# Probe Coach Agent - Heuristics Configuration
+# Phase 4: True Domain-Agnostic Architecture
+#
+# Contains probe indicators, thresholds, and analysis rules.
+
+# Probe indicators - phrases that suggest deeper exploration is warranted
+probe_indicators:
+  vagueness:
+    - "kind of"
+    - "sort of"
+    - "i guess"
+    - "maybe"
+    - "something like"
+  emotional:
+    - "felt"
+    - "feeling"
+    - "hard"
+    - "difficult"
+    - "exciting"
+    - "scary"
+    - "overwhelming"
+    - "rewarding"
+  incomplete:
+    - "..."
+    - "but"
+    - "although"
+    - "however"
+    - "except"
+  self_reflection:
+    - "i realized"
+    - "i learned"
+    - "changed"
+    - "discovered"
+    - "came to understand"
+  story_cues:
+    - "one time"
+    - "there was"
+    - "i remember"
+    - "back when"
+    - "that reminds me"
+
+# Thresholds for analysis decisions
+thresholds:
+  # Minimum words to consider analyzing
+  min_words_for_analysis: 5
+  # Automatic analysis if word count exceeds this
+  auto_analyze_word_count: 15
+  # Maximum pending probes to keep
+  max_pending_probes: 5
+  # How often to analyze (every N messages)
+  analysis_frequency: 2
+
+# Timeouts
+timeouts:
+  analyze_now_ms: 10000
+  vote_transition_ms: 5000
+  llm_call_ms: 8000
+
+# Priority thresholds for clearing probes
+priority_rules:
+  # When engagement is critical, keep only these priorities
+  critical_engagement_keep:
+    - high
+    - urgent
+  # When frustration is moderate/high, keep only these priorities
+  frustration_keep:
+    - high
+    - urgent
+
+# Probe generation limits
+generation:
+  max_probes_per_analysis: 2
+  max_theme_probes: 3

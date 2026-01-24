@@ -2,18 +2,18 @@ defmodule InterviewStudio.Agents.Director do
   @moduledoc """
   The Director Agent - the orchestrator and user-facing voice.
 
+  Phase 4: Domain-Agnostic Architecture
+  - Loads heuristics from domain config (heuristics/director.yaml)
+  - Uses consensus weights from domain config
+  - Topic keywords come from config, not hardcoded
+
   Responsibilities:
   - Formulate natural, warm questions
   - Decide whether to follow script, probe deeper, or transition
   - Synthesize swarm input into conversational decisions
   - Maintain interview flow and pacing
 
-  The Director subscribes to:
-  - interview.utterance.user (user messages)
-  - interview.phase.* (phase changes)
-  - observer.insight.* (themes, patterns)
-  - observer.suggestion.* (probes)
-  - observer.status.* (engagement)
+  The Director subscribes to signals defined in domain config.
   """
 
   use GenServer
@@ -23,6 +23,7 @@ defmodule InterviewStudio.Agents.Director do
   alias InterviewStudio.Pipeline.Phases
   alias InterviewStudio.PromptLoader
   alias InterviewStudio.ConfigLoader
+  alias InterviewStudio.DomainLoader
 
   # Default config (used if YAML file not found)
   @default_config %{
@@ -71,7 +72,9 @@ defmodule InterviewStudio.Agents.Director do
     :frustration_level,     # Track user frustration from sentiment agent
     :user_intent,           # Semantic intent: :continue, :change_topic, :end_interview
     :chronological_direction, # Momentum preference: :forward, :backward, :neutral
-    :config                 # Loaded configuration
+    :config,                # Loaded configuration
+    :domain,                # PHASE 4: Domain configuration
+    :heuristics             # PHASE 4: Agent-specific heuristics from YAML
   ]
 
   # Client API
@@ -129,14 +132,32 @@ defmodule InterviewStudio.Agents.Director do
     session_id = Keyword.fetch!(opts, :session_id)
     llm_config = Keyword.get(opts, :llm_config, default_llm_config())
 
-    # Load config from YAML, falling back to defaults
+    # PHASE 4: Get domain from opts (passed by AgentSupervisor)
+    domain = Keyword.get(opts, :domain)
+
+    # PHASE 4: Load heuristics from domain config, fall back to legacy config
+    heuristics = if domain do
+      DomainLoader.get_heuristics(domain, :director)
+    else
+      %{}
+    end
+
+    # Merge heuristics with legacy config loader for backward compatibility
     config = ConfigLoader.load_with_defaults(:director, @default_config)
+    config = deep_merge_config(config, heuristics)
+
+    # Get core categories from domain phases or use default
+    core_categories = if domain do
+      domain.phases[:core_categories] || Phases.core_categories()
+    else
+      Phases.core_categories()
+    end
 
     state = %__MODULE__{
       session_id: session_id,
       current_phase: :preparation,
       topics_explored: [],
-      topics_to_explore: Phases.core_categories(),  # [:origin, :passion, :differentiation, :moments, :vision]
+      topics_to_explore: core_categories,
       active_themes: [],
       pending_probes: [],
       engagement_level: :high,
@@ -150,15 +171,28 @@ defmodule InterviewStudio.Agents.Director do
       frustration_level: :none,
       user_intent: :continue,
       chronological_direction: :neutral,
-      config: config
+      config: config,
+      domain: domain,
+      heuristics: heuristics
     }
 
-    # Subscribe to relevant signals
-    subscribe_to_signals()
+    # PHASE 4: Subscribe based on domain config or use defaults
+    subscribe_to_signals(domain)
 
-    Logger.info("[Director] Started for session #{session_id}")
+    Logger.info("[Director] Started for session #{session_id} (domain: #{domain && domain.name || "default"})")
     {:ok, state}
   end
+
+  # Deep merge two configs (heuristics override base config)
+  defp deep_merge_config(base, override) when is_map(base) and is_map(override) do
+    Map.merge(base, override, fn
+      _k, base_val, override_val when is_map(base_val) and is_map(override_val) ->
+        deep_merge_config(base_val, override_val)
+      _k, _base_val, override_val ->
+        override_val
+    end)
+  end
+  defp deep_merge_config(_base, override), do: override
 
   @impl true
   def handle_call(:get_state, _from, state) do
@@ -256,7 +290,7 @@ defmodule InterviewStudio.Agents.Director do
   def handle_call({:check_consensus, target_phase}, _from, state) do
     # CONSENSUS MECHANISM: Check if agents agree on the transition
     votes = gather_transition_votes(state.session_id, target_phase)
-    result = evaluate_consensus(votes, target_phase)
+    result = evaluate_consensus(votes, target_phase, state)
     Logger.debug("[Director] Consensus check for #{target_phase}: #{elem(result, 0)}")
     {:reply, result, state}
   end
@@ -532,7 +566,7 @@ defmodule InterviewStudio.Agents.Director do
   # If no consensus, Director makes final call but logs the disagreement
   defp maybe_transition_with_consensus(state, target_phase, default_reason) do
     votes = gather_transition_votes(state.session_id, target_phase)
-    {consensus_result, _votes} = evaluate_consensus(votes, target_phase)
+    {consensus_result, _votes} = evaluate_consensus(votes, target_phase, state)
 
     case consensus_result do
       :consensus ->
@@ -675,10 +709,11 @@ defmodule InterviewStudio.Agents.Director do
     remaining = state.topics_to_explore
 
     # If we have themes that relate to a remaining topic, prioritize that
-    theme_suggested_topic = find_theme_related_topic(state.active_themes, remaining)
+    # PHASE 4: Pass state for config-driven keywords
+    theme_suggested_topic = find_theme_related_topic(state.active_themes, remaining, state)
 
     # If we have probes that relate to a topic, consider that
-    probe_suggested_topic = find_probe_related_topic(state.pending_probes, remaining)
+    probe_suggested_topic = find_probe_related_topic(state.pending_probes, remaining, state)
 
     cond do
       # Theme suggests a topic - explore that thread
@@ -697,17 +732,9 @@ defmodule InterviewStudio.Agents.Director do
     end
   end
 
-  defp find_theme_related_topic(themes, remaining_topics) do
-    # Map themes to related topics
-    # NOTE: Removed "childhood", "grew up", "early" from origin - these pull adults backward
-    # Origin is about professional/career beginnings, not childhood
-    topic_keywords = %{
-      origin: ["background", "start", "began", "journey", "path", "career", "how you got here", "first job", "started out"],
-      passion: ["love", "passion", "drive", "motivate", "care about", "excited", "energy", "fulfilling"],
-      differentiation: ["unique", "different", "approach", "perspective", "style", "stand out", "special"],
-      moments: ["moment", "turning point", "pivotal", "changed", "realized", "breakthrough", "milestone"],
-      vision: ["future", "goal", "vision", "next", "working toward", "dream", "aspiration", "building"]
-    }
+  defp find_theme_related_topic(themes, remaining_topics, state) do
+    # PHASE 4: Get topic keywords from config
+    topic_keywords = state.config[:topic_keywords] || default_topic_keywords()
 
     Enum.find(remaining_topics, fn topic ->
       keywords = Map.get(topic_keywords, topic, [])
@@ -718,14 +745,20 @@ defmodule InterviewStudio.Agents.Director do
     end)
   end
 
-  defp find_probe_related_topic(probes, remaining_topics) do
-    topic_keywords = %{
-      origin: ["background", "start", "how", "where"],
-      passion: ["why", "love", "passion", "drive"],
-      differentiation: ["unique", "different", "approach"],
-      moments: ["when", "moment", "turning", "pivotal"],
-      vision: ["future", "goal", "next", "plan"]
+  # Default topic keywords (used when config not available)
+  defp default_topic_keywords do
+    %{
+      origin: ["background", "start", "began", "journey", "path", "career", "how you got here", "first job", "started out"],
+      passion: ["love", "passion", "drive", "motivate", "care about", "excited", "energy", "fulfilling"],
+      differentiation: ["unique", "different", "approach", "perspective", "style", "stand out", "special"],
+      moments: ["moment", "turning point", "pivotal", "changed", "realized", "breakthrough", "milestone"],
+      vision: ["future", "goal", "vision", "next", "working toward", "dream", "aspiration", "building"]
     }
+  end
+
+  defp find_probe_related_topic(probes, remaining_topics, state) do
+    # PHASE 4: Get probe topic keywords from config
+    topic_keywords = state.config[:probe_topic_keywords] || default_probe_topic_keywords()
 
     Enum.find(remaining_topics, fn topic ->
       keywords = Map.get(topic_keywords, topic, [])
@@ -734,6 +767,17 @@ defmodule InterviewStudio.Agents.Director do
         Enum.any?(keywords, fn kw -> String.contains?(probe_text, kw) end)
       end)
     end)
+  end
+
+  # Default probe topic keywords
+  defp default_probe_topic_keywords do
+    %{
+      origin: ["background", "start", "how", "where"],
+      passion: ["why", "love", "passion", "drive"],
+      differentiation: ["unique", "different", "approach"],
+      moments: ["when", "moment", "turning", "pivotal"],
+      vision: ["future", "goal", "next", "plan"]
+    }
   end
 
   defp decide_probing_action(state) do
@@ -807,12 +851,28 @@ defmodule InterviewStudio.Agents.Director do
     InterviewBus.publish(signal)
   end
 
-  defp subscribe_to_signals do
+  # PHASE 4: Subscribe to signals based on domain config or use defaults
+  defp subscribe_to_signals(nil) do
+    # No domain - use default subscriptions
     InterviewBus.subscribe("interview.utterance.user")
     InterviewBus.subscribe("interview.phase.**")
     InterviewBus.subscribe("observer.insight.**")
     InterviewBus.subscribe("observer.suggestion.**")
     InterviewBus.subscribe("observer.status.**")
+  end
+
+  defp subscribe_to_signals(domain) do
+    # Get subscriptions from domain config
+    subscriptions = DomainLoader.get_subscriptions(domain, :director)
+
+    if subscriptions == [] do
+      # Fallback to defaults if no config
+      subscribe_to_signals(nil)
+    else
+      Enum.each(subscriptions, fn pattern ->
+        InterviewBus.subscribe(pattern)
+      end)
+    end
   end
 
   # CONSENSUS MECHANISM: Gather votes from all observer agents
@@ -855,13 +915,14 @@ defmodule InterviewStudio.Agents.Director do
 
   # CONSENSUS MECHANISM: Evaluate votes to determine if transition should proceed
   # Default threshold: 2/3 agents must be ready (or abstain counts as not blocking)
-  defp evaluate_consensus(votes, target_phase) do
+  # PHASE 4: Now accepts state for config-driven weights
+  defp evaluate_consensus(votes, target_phase, state) do
     ready_count = Enum.count(votes, fn {_agent, {vote, _}} -> vote == :ready end)
     not_ready_count = Enum.count(votes, fn {_agent, {vote, _}} -> vote == :not_ready end)
     _total_voting = Enum.count(votes, fn {_agent, {vote, _}} -> vote != :abstain end)
 
-    # Apply weighted voting for certain decisions
-    weighted_votes = apply_vote_weights(votes, target_phase)
+    # Apply weighted voting for certain decisions (PHASE 4: from config)
+    weighted_votes = apply_vote_weights(votes, target_phase, state)
 
     cond do
       # Strong consensus: majority of voters say ready
@@ -882,32 +943,17 @@ defmodule InterviewStudio.Agents.Director do
     end
   end
 
-  # Apply agent-specific weights for certain decisions
-  defp apply_vote_weights(votes, target_phase) do
-    # Default weights
-    weights = %{
-      story_analyst: 1.0,
-      probe_coach: 1.0,
-      engagement_monitor: 1.0
-    }
-
-    # Adjust weights based on decision type
-    weights = case target_phase do
-      :closing ->
-        # Engagement Monitor has higher weight for closing decisions
-        %{weights | engagement_monitor: 2.0}
-
-      :synthesis ->
-        # Story Analyst has higher weight for synthesis readiness
-        %{weights | story_analyst: 1.5}
-
-      :probing ->
-        # Probe Coach has higher weight for probing decisions
-        %{weights | probe_coach: 1.5}
-
-      _ ->
-        weights
+  # PHASE 4: Apply agent-specific weights from domain consensus config
+  defp apply_vote_weights(votes, target_phase, state) do
+    # Get consensus config from domain
+    consensus_config = if state.domain do
+      DomainLoader.get_consensus_weights(state.domain, target_phase)
+    else
+      %{weights: default_consensus_weights(target_phase), threshold: 0.6}
     end
+
+    weights = consensus_config[:weights] || default_consensus_weights(target_phase)
+    threshold_pct = consensus_config[:threshold] || 0.6
 
     # Calculate weighted score
     weighted_ready = votes
@@ -920,9 +966,23 @@ defmodule InterviewStudio.Agents.Director do
     end)
 
     total_weight = weights |> Map.values() |> Enum.sum()
-    threshold = total_weight * 0.6  # 60% threshold
+    threshold = total_weight * threshold_pct
 
     %{weighted_ready: weighted_ready, threshold: threshold, weights: weights}
+  end
+
+  # Default consensus weights when config not available
+  defp default_consensus_weights(:closing) do
+    %{story_analyst: 1.0, probe_coach: 1.0, engagement_monitor: 2.0}
+  end
+  defp default_consensus_weights(:synthesis) do
+    %{story_analyst: 1.5, probe_coach: 1.0, engagement_monitor: 1.0}
+  end
+  defp default_consensus_weights(:probing) do
+    %{story_analyst: 1.0, probe_coach: 1.5, engagement_monitor: 1.0}
+  end
+  defp default_consensus_weights(_) do
+    %{story_analyst: 1.0, probe_coach: 1.0, engagement_monitor: 1.0}
   end
 
   # LLM Response Generation

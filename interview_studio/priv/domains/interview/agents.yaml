@@ -1,0 +1,96 @@
+# Interview Domain - Agent Configuration
+# Phase 4: True Domain-Agnostic Architecture
+#
+# Defines all agents, their modules, and signal subscriptions.
+
+agents:
+  # Critical agents - session fails if these don't start
+  critical:
+    - id: fsm
+      module: InterviewStudio.Pipeline.InterviewFSM
+      description: "Interview state machine - manages phase transitions"
+      requires_llm: false
+
+    - id: director
+      module: InterviewStudio.Agents.Director
+      description: "Orchestrator - formulates questions and synthesizes agent input"
+      requires_llm: true
+      heuristics_config: "heuristics/director.yaml"
+
+  # Observer agents - session continues if these fail
+  observers:
+    - id: scribe
+      module: InterviewStudio.Agents.Scribe
+      description: "Transcription and quote detection"
+      requires_llm: false
+
+    - id: story_analyst
+      module: InterviewStudio.Agents.StoryAnalyst
+      description: "Theme and pattern extraction"
+      requires_llm: true
+      heuristics_config: "heuristics/story_analyst.yaml"
+
+    - id: probe_coach
+      module: InterviewStudio.Agents.ProbeCoach
+      description: "Follow-up question suggestions"
+      requires_llm: true
+      heuristics_config: "heuristics/probe_coach.yaml"
+
+    - id: engagement_monitor
+      module: InterviewStudio.Agents.EngagementMonitor
+      description: "User engagement tracking"
+      requires_llm: false
+
+    - id: timer_agent
+      module: InterviewStudio.Agents.TimerAgent
+      description: "Session timing and milestones"
+      requires_llm: false
+
+    - id: sentiment_agent
+      module: InterviewStudio.Agents.SentimentAgent
+      description: "Frustration and intent detection"
+      requires_llm: true
+      heuristics_config: "heuristics/sentiment.yaml"
+
+# Signal subscriptions per agent
+# These define what signals each agent listens to
+subscriptions:
+  director:
+    - "interview.utterance.user"
+    - "interview.phase.**"
+    - "observer.insight.**"
+    - "observer.suggestion.**"
+    - "observer.status.**"
+
+  story_analyst:
+    - "interview.utterance.**"
+    - "engagement.alert.broadcast"
+    - "observer.status.engagement"
+    - "observer.suggestion.probe"
+
+  probe_coach:
+    - "interview.utterance.user"
+    - "direct.probe_coach"
+    - "analyst.theme.discovered"
+    - "observer.status.engagement"
+    - "observer.status.frustration"
+
+  sentiment_agent:
+    - "interview.utterance.user"
+    - "observer.status.engagement"
+    - "interview.phase.**"
+
+  engagement_monitor:
+    - "interview.utterance.**"
+    - "observer.status.sentiment"
+
+  timer_agent:
+    - "interview.phase.**"
+    - "observer.status.frustration"
+
+  scribe:
+    - "interview.utterance.**"
+    - "interview.phase.**"
+
+  fsm:
+    - "interview.phase.**"

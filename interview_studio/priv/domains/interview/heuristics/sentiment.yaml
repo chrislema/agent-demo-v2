@@ -1,0 +1,81 @@
+# Sentiment Agent - Heuristics Configuration
+# Phase 4: True Domain-Agnostic Architecture
+#
+# Contains intent phrases, frustration detection, and fallback analysis rules.
+
+# Intent detection phrases (for fallback analysis)
+intent_detection:
+  end_interview:
+    - "let's wrap"
+    - "i'm done"
+    - "let's end"
+    - "that's enough"
+    - "we can stop"
+    - "time to finish"
+  change_topic:
+    - "move on"
+    - "different topic"
+    - "something else"
+    - "don't want to talk about"
+    - "can we discuss"
+    - "let's talk about"
+
+# Frustration phrases by level
+frustration_phrases:
+  high:
+    - "stop asking"
+    - "this is ridiculous"
+    - "i told you"
+    - "how many times"
+    - "are you listening"
+    - "this is frustrating"
+  moderate:
+    - "already told"
+    - "already said"
+    - "this is repetitive"
+    - "we covered this"
+    - "same thing"
+  mild:
+    - "i already"
+    - "you already asked"
+    - "mentioned before"
+
+# Chronological direction keywords
+chronological_keywords:
+  forward:
+    - future
+    - goal
+    - vision
+    - career
+    - working toward
+    - plan
+    - next
+    - building
+  backward:
+    - childhood
+    - grew up
+    - when i was young
+    - early years
+    - back then
+    - used to be
+
+# Frustration recommendations
+frustration_recommendations:
+  high: "User is frustrated - apologize briefly and change topic immediately"
+  moderate: "User seems irritated - accept their answer and move on"
+  mild: "User may be getting impatient - keep responses concise"
+  none: "Sentiment is neutral"
+
+# Thresholds
+thresholds:
+  short_answer_words: 5
+  llm_timeout_ms: 2000
+  frustration_history_size: 10
+
+# Escalation rules
+escalation:
+  # When engagement is critical, escalate frustration
+  critical_engagement_escalation:
+    mild: moderate
+    moderate: high
+    high: high

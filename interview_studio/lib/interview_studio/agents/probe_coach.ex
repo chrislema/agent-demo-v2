@@ -2,6 +2,11 @@ defmodule InterviewStudio.Agents.ProbeCoach do
   @moduledoc """
   The Probe Coach Agent - identifies opportunities to go deeper.
 
+  Phase 4: Domain-Agnostic Architecture
+  - Loads heuristics from domain config (heuristics/probe_coach.yaml)
+  - Probe indicators come from config
+  - Thresholds come from config
+
   Looks for:
   - Emotional language worth exploring
   - Vague statements that need specifics
@@ -16,6 +21,7 @@ defmodule InterviewStudio.Agents.ProbeCoach do
 
   alias InterviewStudio.InterviewBus
   alias InterviewStudio.PromptLoader
+  alias InterviewStudio.DomainLoader
 
   defstruct [
     :session_id,
@@ -25,7 +31,9 @@ defmodule InterviewStudio.Agents.ProbeCoach do
     :received_themes,      # Themes received from Story Analyst
     :engagement_level,     # Current engagement from Engagement Monitor
     :frustration_level,    # From Sentiment Agent - affects probe suggestions
-    :llm_config
+    :llm_config,
+    :domain,               # PHASE 4: Domain configuration
+    :heuristics            # PHASE 4: Agent-specific heuristics from YAML
   ]
 
   # Client API
@@ -68,6 +76,16 @@ defmodule InterviewStudio.Agents.ProbeCoach do
     session_id = Keyword.fetch!(opts, :session_id)
     llm_config = Keyword.get(opts, :llm_config, default_llm_config())
 
+    # PHASE 4: Get domain from opts (passed by AgentSupervisor)
+    domain = Keyword.get(opts, :domain)
+
+    # PHASE 4: Load heuristics from domain config
+    heuristics = if domain do
+      DomainLoader.get_heuristics(domain, :probe_coach)
+    else
+      %{}
+    end
+
     state = %__MODULE__{
       session_id: session_id,
       pending_probes: [],
@@ -76,12 +94,15 @@ defmodule InterviewStudio.Agents.ProbeCoach do
       received_themes: [],
       engagement_level: :high,
       frustration_level: :none,
-      llm_config: llm_config
+      llm_config: llm_config,
+      domain: domain,
+      heuristics: heuristics
     }
 
-    subscribe_to_signals()
+    # PHASE 4: Subscribe based on domain config or use defaults
+    subscribe_to_signals(domain)
 
-    Logger.info("[ProbeCoach] Started for session #{session_id}")
+    Logger.info("[ProbeCoach] Started for session #{session_id} (domain: #{domain && domain.name || "default"})")
     {:ok, state}
   end
 
@@ -110,7 +131,8 @@ defmodule InterviewStudio.Agents.ProbeCoach do
     # Used by Session.gather_insights/2 synchronization barrier
     Logger.debug("[ProbeCoach] Synchronous analysis requested")
 
-    if state.last_user_message == nil or not worth_analyzing?(state.last_user_message) do
+    # PHASE 4: Pass heuristics for config-driven analysis
+    if state.last_user_message == nil or not worth_analyzing?(state.last_user_message, state.heuristics || %{}) do
       # No message or not worth analyzing - return existing probes
       {:reply, {:ok, state.pending_probes}, state}
     else
@@ -160,7 +182,8 @@ defmodule InterviewStudio.Agents.ProbeCoach do
     new_state = %{state | last_user_message: content}
 
     # Check if this response is worth probing
-    if worth_analyzing?(content) do
+    # PHASE 4: Pass heuristics for config-driven analysis
+    if worth_analyzing?(content, state.heuristics || %{}) do
       analyze_async(content, new_state)
     end
 
@@ -276,21 +299,44 @@ defmodule InterviewStudio.Agents.ProbeCoach do
   end
 
   # Quick heuristic check before calling LLM
+  # PHASE 4: Now uses config-driven thresholds and indicators
 
-  defp worth_analyzing?(content) do
+  defp worth_analyzing?(content, heuristics) do
     word_count = String.split(content) |> length()
+    thresholds = heuristics[:thresholds] || %{}
+
+    min_words = thresholds[:min_words_for_analysis] || 5
+    auto_analyze = thresholds[:auto_analyze_word_count] || 15
 
     # Analyze if response has any substance
-    word_count > 5 and (
+    word_count > min_words and (
       # Has emotional content or probe indicators
-      has_probe_indicators?(content) or
+      has_probe_indicators?(content, heuristics) or
       # Is long enough to contain depth
-      word_count > 15
+      word_count > auto_analyze
     )
   end
 
-  defp has_probe_indicators?(text) do
-    indicators = [
+
+  defp has_probe_indicators?(text, heuristics) do
+    # PHASE 4: Get indicators from config or use defaults
+    config_indicators = heuristics[:probe_indicators] || %{}
+
+    # Flatten all indicator categories into a single list
+    all_indicators = if map_size(config_indicators) > 0 do
+      Enum.flat_map(config_indicators, fn {_category, phrases} -> phrases end)
+    else
+      default_probe_indicators()
+    end
+
+    downcased = String.downcase(text)
+    Enum.any?(all_indicators, fn ind -> String.contains?(downcased, ind) end)
+  end
+
+
+  # Default probe indicators when config not available
+  defp default_probe_indicators do
+    [
       # Vagueness
       "kind of", "sort of", "i guess", "maybe", "something like",
       # Emotional hints
@@ -302,9 +348,6 @@ defmodule InterviewStudio.Agents.ProbeCoach do
       # Story cues
       "one time", "there was", "i remember"
     ]
-
-    downcased = String.downcase(text)
-    Enum.any?(indicators, fn ind -> String.contains?(downcased, ind) end)
   end
 
   # Analysis
@@ -520,16 +563,27 @@ defmodule InterviewStudio.Agents.ProbeCoach do
     end
   end
 
-  defp subscribe_to_signals do
+  # PHASE 4: Subscribe to signals based on domain config or use defaults
+  defp subscribe_to_signals(nil) do
     InterviewBus.subscribe("interview.utterance.user")
-    # AGENT-TO-AGENT: Subscribe to direct messages from other agents
     InterviewBus.subscribe_direct("probe_coach")
-    # Subscribe to theme discoveries from Story Analyst
     InterviewBus.subscribe("analyst.theme.discovered")
-    # Subscribe to engagement updates from Engagement Monitor
     InterviewBus.subscribe("observer.status.engagement")
-    # CROSS-AGENT: Subscribe to frustration signals from Sentiment Agent
     InterviewBus.subscribe("observer.status.frustration")
+  end
+
+  defp subscribe_to_signals(domain) do
+    subscriptions = DomainLoader.get_subscriptions(domain, :probe_coach)
+
+    if subscriptions == [] do
+      subscribe_to_signals(nil)
+    else
+      Enum.each(subscriptions, fn pattern ->
+        InterviewBus.subscribe(pattern)
+      end)
+      # Always subscribe to direct messages
+      InterviewBus.subscribe_direct("probe_coach")
+    end
   end
 
   defp via_tuple(session_id) do

@@ -2,6 +2,10 @@ defmodule InterviewStudio.AgentSupervisor do
   @moduledoc """
   Dynamic supervisor for interview session agents.
 
+  Phase 4: Domain-Agnostic Architecture
+  - Loads agents dynamically from domain configuration
+  - Stores domain config in :persistent_term for session access
+
   Phase 7.2: Agent Failure Isolation
   - Single agent crash doesn't break the system
   - Automatic restart with backoff
@@ -15,8 +19,7 @@ defmodule InterviewStudio.AgentSupervisor do
   use DynamicSupervisor
   require Logger
 
-  alias InterviewStudio.Agents.{Director, Scribe, StoryAnalyst, ProbeCoach, EngagementMonitor, TimerAgent, SentimentAgent}
-  alias InterviewStudio.Pipeline.InterviewFSM
+  alias InterviewStudio.DomainLoader
 
   def start_link(init_arg) do
     DynamicSupervisor.start_link(__MODULE__, init_arg, name: __MODULE__)
@@ -35,63 +38,62 @@ defmodule InterviewStudio.AgentSupervisor do
   Start all agents for a session under supervision.
   Returns {:ok, session_id} or {:error, reason}.
 
+  Options:
+  - :domain - Domain name to load configuration from (default: "interview")
+  - :llm_config - Override LLM configuration
+
   Agents are started with restart: :transient so they only restart
   on abnormal termination.
   """
   def start_session_agents(session_id, opts \\ []) do
-    llm_config = Keyword.get(opts, :llm_config, %{})
+    domain_name = Keyword.get(opts, :domain, "interview")
+    llm_config_override = Keyword.get(opts, :llm_config, %{})
 
-    # Start agents in order, collecting results
-    agent_specs = [
-      {:fsm, fn -> start_child(InterviewFSM, session_id: session_id) end},
-      {:director, fn -> start_child(Director, session_id: session_id, llm_config: llm_config) end},
-      {:scribe, fn -> start_child(Scribe, session_id: session_id) end},
-      {:story_analyst, fn -> start_child(StoryAnalyst, session_id: session_id, llm_config: llm_config) end},
-      {:probe_coach, fn -> start_child(ProbeCoach, session_id: session_id, llm_config: llm_config) end},
-      {:engagement_monitor, fn -> start_child(EngagementMonitor, session_id: session_id) end},
-      {:timer_agent, fn -> start_child(TimerAgent, session_id: session_id) end},
-      {:sentiment_agent, fn -> start_child(SentimentAgent, session_id: session_id) end}
-    ]
+    # Load domain configuration
+    case DomainLoader.load(domain_name) do
+      {:ok, domain} ->
+        # Merge LLM config with domain defaults
+        llm_config = Map.merge(domain.llm_defaults || %{}, llm_config_override)
 
-    results = Enum.map(agent_specs, fn {name, start_fn} ->
-      case start_fn.() do
-        {:ok, pid} ->
-          Logger.debug("[AgentSupervisor] Started #{name} for session #{session_id}")
-          {:ok, name, pid}
-        {:error, {:already_started, pid}} ->
-          Logger.debug("[AgentSupervisor] #{name} already started for session #{session_id}")
-          {:ok, name, pid}
-        {:error, reason} ->
-          Logger.error("[AgentSupervisor] Failed to start #{name}: #{inspect(reason)}")
-          {:error, name, reason}
-      end
-    end)
+        # Build agent specs from domain config
+        agent_specs = build_specs_from_config(domain.agents, session_id, llm_config, domain)
 
-    # Check if all critical agents started
-    critical_agents = [:fsm, :director]
-    critical_failures = Enum.filter(results, fn
-      {:error, name, _} -> name in critical_agents
-      _ -> false
-    end)
+        # Start agents
+        results = start_agents(agent_specs, session_id)
 
-    if critical_failures == [] do
-      # Log any non-critical failures but continue
-      non_critical_failures = Enum.filter(results, fn
-        {:error, name, _} -> name not in critical_agents
-        _ -> false
-      end)
+        # Check if all critical agents started
+        critical_agent_ids = get_critical_agent_ids(domain.agents)
+        critical_failures = Enum.filter(results, fn
+          {:error, name, _} -> name in critical_agent_ids
+          _ -> false
+        end)
 
-      Enum.each(non_critical_failures, fn {:error, name, reason} ->
-        Logger.warning("[AgentSupervisor] Non-critical agent #{name} failed: #{inspect(reason)}")
-      end)
+        if critical_failures == [] do
+          # Store domain config for session access
+          DomainLoader.store_session_domain(session_id, domain)
 
-      Logger.info("[AgentSupervisor] Session #{session_id} started with #{length(results) - length(non_critical_failures)}/#{length(results)} agents")
-      {:ok, session_id}
-    else
-      # Critical failure - clean up and return error
-      stop_session_agents(session_id)
-      [{:error, name, reason} | _] = critical_failures
-      {:error, "Critical agent #{name} failed: #{inspect(reason)}"}
+          # Log any non-critical failures but continue
+          non_critical_failures = Enum.filter(results, fn
+            {:error, name, _} -> name not in critical_agent_ids
+            _ -> false
+          end)
+
+          Enum.each(non_critical_failures, fn {:error, name, reason} ->
+            Logger.warning("[AgentSupervisor] Non-critical agent #{name} failed: #{inspect(reason)}")
+          end)
+
+          Logger.info("[AgentSupervisor] Session #{session_id} started with #{length(results) - length(non_critical_failures)}/#{length(results)} agents (domain: #{domain_name})")
+          {:ok, session_id}
+        else
+          # Critical failure - clean up and return error
+          stop_session_agents(session_id)
+          [{:error, name, reason} | _] = critical_failures
+          {:error, "Critical agent #{name} failed: #{inspect(reason)}"}
+        end
+
+      {:error, reason} ->
+        Logger.error("[AgentSupervisor] Failed to load domain #{domain_name}: #{inspect(reason)}")
+        {:error, "Failed to load domain: #{inspect(reason)}"}
     end
   end
 
@@ -99,22 +101,21 @@ defmodule InterviewStudio.AgentSupervisor do
   Stop all agents for a session.
   """
   def stop_session_agents(session_id) do
-    agent_types = [:fsm, :director, :scribe, :story_analyst, :probe_coach, :engagement_monitor, :timer_agent, :sentiment_agent]
+    # Get domain to know which agents to stop
+    case DomainLoader.get_session_domain(session_id) do
+      nil ->
+        # Fallback to default agent types if no domain cached
+        stop_agents_by_type(session_id, default_agent_types())
 
-    Enum.each(agent_types, fn type ->
-      case Registry.lookup(InterviewStudio.SessionRegistry, {type, session_id}) do
-        [{pid, _}] ->
-          try do
-            DynamicSupervisor.terminate_child(__MODULE__, pid)
-          rescue
-            _ -> :ok
-          catch
-            :exit, _ -> :ok
-          end
-        [] ->
-          :ok
-      end
-    end)
+      domain ->
+        # Get agent IDs from domain config
+        agent_ids = DomainLoader.get_all_agents(domain)
+                    |> Enum.map(fn a -> String.to_atom(a[:id]) end)
+        stop_agents_by_type(session_id, agent_ids)
+
+        # Clear session domain
+        DomainLoader.clear_session_domain(session_id)
+    end
 
     Logger.info("[AgentSupervisor] Stopped agents for session #{session_id}")
     :ok
@@ -134,7 +135,13 @@ defmodule InterviewStudio.AgentSupervisor do
   Get the status of all agents for a session.
   """
   def session_status(session_id) do
-    agent_types = [:fsm, :director, :scribe, :story_analyst, :probe_coach, :engagement_monitor, :timer_agent, :sentiment_agent]
+    # Get agent types from domain config or use defaults
+    agent_types = case DomainLoader.get_session_domain(session_id) do
+      nil -> default_agent_types()
+      domain ->
+        DomainLoader.get_all_agents(domain)
+        |> Enum.map(fn a -> String.to_atom(a[:id]) end)
+    end
 
     Enum.map(agent_types, fn type ->
       {type, agent_alive?(session_id, type)}
@@ -147,9 +154,110 @@ defmodule InterviewStudio.AgentSupervisor do
   Returns {:ok, pid} or {:error, reason}.
   """
   def restart_agent(session_id, agent_type, opts \\ []) do
-    llm_config = Keyword.get(opts, :llm_config, %{})
+    llm_config_override = Keyword.get(opts, :llm_config, %{})
 
     # Stop the agent if it's running
+    stop_agent(session_id, agent_type)
+
+    # Get domain config
+    case DomainLoader.get_session_domain(session_id) do
+      nil ->
+        {:error, :no_domain_config}
+
+      domain ->
+        # Find agent config
+        agent_id = to_string(agent_type)
+        agent_config = DomainLoader.get_agent(domain, agent_id)
+
+        if agent_config do
+          llm_config = Map.merge(domain.llm_defaults || %{}, llm_config_override)
+          opts = build_agent_opts(agent_config, session_id, llm_config, domain)
+          module = resolve_module(agent_config[:module])
+          start_child(module, opts)
+        else
+          {:error, :agent_not_found}
+        end
+    end
+  end
+
+  # ============================================================================
+  # Private Functions
+  # ============================================================================
+
+  # Build agent specs from domain configuration
+  defp build_specs_from_config(agents_config, session_id, llm_config, domain) do
+    critical_agents = agents_config[:critical] || []
+    observer_agents = agents_config[:observers] || []
+    all_agents = critical_agents ++ observer_agents
+
+    Enum.map(all_agents, fn agent_config ->
+      agent_id = String.to_atom(agent_config[:id])
+      module = resolve_module(agent_config[:module])
+      opts = build_agent_opts(agent_config, session_id, llm_config, domain)
+
+      {agent_id, fn -> start_child(module, opts) end}
+    end)
+  end
+
+  # Build opts for an agent based on its config
+  defp build_agent_opts(agent_config, session_id, llm_config, domain) do
+    opts = [session_id: session_id, domain: domain]
+
+    # Add LLM config if agent requires it
+    opts = if agent_config[:requires_llm] do
+      [{:llm_config, llm_config} | opts]
+    else
+      opts
+    end
+
+    opts
+  end
+
+  # Resolve module from string to atom
+  defp resolve_module(module_name) when is_binary(module_name) do
+    String.to_existing_atom("Elixir.#{module_name}")
+  rescue
+    ArgumentError ->
+      # Try without Elixir prefix
+      String.to_atom("Elixir.#{module_name}")
+  end
+
+  defp resolve_module(module_name) when is_atom(module_name) do
+    module_name
+  end
+
+  # Get critical agent IDs from config
+  defp get_critical_agent_ids(agents_config) do
+    critical_agents = agents_config[:critical] || []
+    Enum.map(critical_agents, fn a -> String.to_atom(a[:id]) end)
+  end
+
+  # Start agents and collect results
+  defp start_agents(agent_specs, session_id) do
+    Enum.map(agent_specs, fn {name, start_fn} ->
+      case start_fn.() do
+        {:ok, pid} ->
+          Logger.debug("[AgentSupervisor] Started #{name} for session #{session_id}")
+          {:ok, name, pid}
+        {:error, {:already_started, pid}} ->
+          Logger.debug("[AgentSupervisor] #{name} already started for session #{session_id}")
+          {:ok, name, pid}
+        {:error, reason} ->
+          Logger.error("[AgentSupervisor] Failed to start #{name}: #{inspect(reason)}")
+          {:error, name, reason}
+      end
+    end)
+  end
+
+  # Stop agents by type
+  defp stop_agents_by_type(session_id, agent_types) do
+    Enum.each(agent_types, fn type ->
+      stop_agent(session_id, type)
+    end)
+  end
+
+  # Stop a single agent
+  defp stop_agent(session_id, agent_type) do
     case Registry.lookup(InterviewStudio.SessionRegistry, {agent_type, session_id}) do
       [{pid, _}] ->
         try do
@@ -162,22 +270,7 @@ defmodule InterviewStudio.AgentSupervisor do
       [] ->
         :ok
     end
-
-    # Start the agent fresh
-    case agent_type do
-      :fsm -> start_child(InterviewFSM, session_id: session_id)
-      :director -> start_child(Director, session_id: session_id, llm_config: llm_config)
-      :scribe -> start_child(Scribe, session_id: session_id)
-      :story_analyst -> start_child(StoryAnalyst, session_id: session_id, llm_config: llm_config)
-      :probe_coach -> start_child(ProbeCoach, session_id: session_id, llm_config: llm_config)
-      :engagement_monitor -> start_child(EngagementMonitor, session_id: session_id)
-      :timer_agent -> start_child(TimerAgent, session_id: session_id)
-      :sentiment_agent -> start_child(SentimentAgent, session_id: session_id)
-      _ -> {:error, :unknown_agent_type}
-    end
   end
-
-  # Private functions
 
   defp start_child(module, opts) do
     spec = %{
@@ -188,5 +281,10 @@ defmodule InterviewStudio.AgentSupervisor do
     }
 
     DynamicSupervisor.start_child(__MODULE__, spec)
+  end
+
+  # Default agent types (fallback when no domain config)
+  defp default_agent_types do
+    [:fsm, :director, :scribe, :story_analyst, :probe_coach, :engagement_monitor, :timer_agent, :sentiment_agent]
   end
 end

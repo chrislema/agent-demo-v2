@@ -1,0 +1,53 @@
+# Story Analyst Agent - Heuristics Configuration
+# Phase 4: True Domain-Agnostic Architecture
+#
+# Contains analysis thresholds and rules for theme extraction.
+
+# Analysis thresholds
+thresholds:
+  # Analyze every N user messages
+  analysis_frequency: 2
+  # Minimum length for first message to trigger analysis
+  first_message_min_length: 50
+  # Maximum themes to track
+  max_themes: 10
+  # Maximum patterns to track
+  max_patterns: 5
+  # Maximum conversation buffer size
+  max_conversation_buffer: 10
+
+# Engagement levels that skip analysis
+# When engagement is at these levels, pause deep analysis
+skip_analysis_engagement_levels:
+  - critical
+
+# Timeouts
+timeouts:
+  analyze_now_ms: 10000
+  vote_transition_ms: 5000
+  llm_call_ms: 8000
+
+# Theme confidence thresholds
+confidence:
+  # Minimum confidence for a theme to be included
+  min_theme_confidence: 0.5
+  # High confidence threshold
+  high_confidence: 0.8
+
+# Transition readiness thresholds
+transition_readiness:
+  # Themes needed for synthesis
+  synthesis_min_themes: 3
+  # Themes + patterns combo for synthesis
+  synthesis_min_themes_with_patterns: 1
+  synthesis_min_patterns_with_themes: 1
+  # Themes needed for closing
+  closing_min_themes: 2
+  # Themes for closing when engagement is critical
+  closing_critical_min_themes: 1
+  # Themes for probing readiness
+  probing_min_themes: 1
+
+# Probe suggestion tracking
+probe_suggestions:
+  max_tracked: 5

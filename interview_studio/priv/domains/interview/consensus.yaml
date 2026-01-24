@@ -1,0 +1,58 @@
+# Interview Domain - Consensus Configuration
+# Phase 4: True Domain-Agnostic Architecture
+#
+# Defines voting weights, thresholds, and override rules for phase transitions.
+
+consensus:
+  # Thresholds for consensus determination
+  thresholds:
+    # Number of "ready" votes needed for strong consensus
+    strong_consensus: 2
+    # Weighted threshold (percentage of total weight)
+    weighted_threshold: 0.6
+
+  # Agent voting weights by phase
+  # Higher weight = more influence on the decision
+  weights:
+    # Default weights for all phases
+    default:
+      story_analyst: 1.0
+      probe_coach: 1.0
+      engagement_monitor: 1.0
+
+    # Engagement Monitor has higher weight for closing decisions
+    closing:
+      story_analyst: 1.0
+      probe_coach: 1.0
+      engagement_monitor: 2.0
+
+    # Story Analyst has higher weight for synthesis readiness
+    synthesis:
+      story_analyst: 1.5
+      probe_coach: 1.0
+      engagement_monitor: 1.0
+
+    # Probe Coach has higher weight for probing decisions
+    probing:
+      story_analyst: 1.0
+      probe_coach: 1.5
+      engagement_monitor: 1.0
+
+  # Override conditions that bypass normal voting
+  # These are evaluated BEFORE consensus voting
+  overrides:
+    - condition: user_request_end
+      action: transition_to_closing
+      description: "User explicitly requested to end the interview"
+
+    - condition: critical_engagement
+      action: transition_to_closing
+      description: "Engagement dropped to critical level"
+
+    - condition: high_frustration
+      action: transition_to_synthesis
+      description: "User frustration detected - move toward synthesis"
+
+    - condition: preparation_complete
+      action: transition_to_opening
+      description: "Auto-advance from preparation to opening"

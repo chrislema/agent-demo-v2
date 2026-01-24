@@ -1,0 +1,32 @@
+# Interview Domain - Master Configuration
+# Phase 4: True Domain-Agnostic Architecture
+#
+# This file defines the master configuration for the interview domain.
+# All other config files are referenced from here.
+
+domain:
+  name: "interview"
+  display_name: "Story of You Interview"
+  description: "A conversational interview experience that discovers what makes a person unique"
+  version: "1.0.0"
+
+# References to other configuration files
+agents_config: "agents.yaml"
+phases_config: "phases.yaml"
+signals_config: "signals.yaml"
+actions_config: "actions.yaml"
+consensus_config: "consensus.yaml"
+
+# LLM defaults for all agents in this domain
+llm_defaults:
+  provider: "openrouter"
+  model: "meta-llama/llama-4-scout-17b-16e-instruct"
+  temperature: 0.7
+  max_tokens: 1000
+
+# Domain-wide settings
+settings:
+  max_session_duration_minutes: 30
+  min_themes_for_synthesis: 2
+  max_probes_per_session: 10
+  default_engagement_timeout_ms: 4000
