@@ -32,26 +32,24 @@ Ran automated feedback loop with 3 personas (cooperative, terse, frustrated). Fo
 
 ---
 
-## Issue 2: Director Asks Repetitive Questions
+## Issue 2: Director Asks Repetitive Questions - FIXED
 
-**Priority: High**
+**Priority: High** | **Status: FIXED** (2026-01-24)
 
-Director stays on same topic, doesn't rotate through origin → passion → differentiation → moments → vision
+**Root causes found:**
+1. High-priority probes from ProbeCoach took precedence over topic rotation
+2. Dynamic question prompt didn't strongly enforce moving to NEW topics
+3. LLM was generating natural follow-ups instead of topic transitions
 
-**Evidence from cooperative persona:**
-- 5 exchanges ALL about "parents' support" and "risk-taking"
-- Never moved from origin topic
-- Repetitive patterns: "Can you elaborate...", "I'd love to dive deeper..."
+**Fixes applied:**
+1. `decide_core_questions_action` now prioritizes topic rotation during core_questions phase
+2. Probing only happens AFTER all 5 core topics are covered
+3. `dynamic_question.txt` prompt strongly enforces topic pivots with examples
 
-**Root cause hypothesis:**
-- Director prompt doesn't enforce topic rotation strongly enough
-- `topics_explored` tracking may have issues
-- Themes (47 discovered) and probes (124 suggested) not being used
-
-**Files to tune:**
-- `priv/domains/interview/prompts/director/*.txt`
-- `priv/domains/interview/heuristics/director.yaml`
-- `lib/interview_studio/agents/director.ex` - `get_next_action` logic
+**Results after fix:**
+- Cooperative persona now covers all 5 topics: origin → passion → differentiation → moments → vision
+- Score remained at 100 for cooperative persona
+- Questions now properly transition between topics
 
 ---
 
