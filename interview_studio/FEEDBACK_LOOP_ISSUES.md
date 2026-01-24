@@ -1,7 +1,7 @@
 # Feedback Loop Issues to Fix
 
 Created: 2026-01-24
-Status: In progress (Issues 1, 2, 3 fixed)
+Status: COMPLETE (All 4 issues fixed)
 
 ## Summary
 
@@ -74,9 +74,9 @@ Ran automated feedback loop with 3 personas (cooperative, terse, frustrated). Fo
 
 ---
 
-## Issue 4: Director Ignores Discovered Themes/Probes
+## Issue 4: Director Ignores Discovered Themes/Probes - FIXED
 
-**Priority: Medium**
+**Priority: Medium** | **Status: FIXED** (2026-01-24)
 
 StoryAnalyst discovers themes, ProbeCoach suggests probes, but Director doesn't use them
 
@@ -85,15 +85,29 @@ StoryAnalyst discovers themes, ProbeCoach suggests probes, but Director doesn't 
 - 124 probes suggested
 - Director questions don't reference these insights
 
-**Root cause hypothesis:**
-- `last_insights` not properly used in Director
-- Prompt template may not include theme/probe context
-- Insight passing may be broken
+**Root causes found:**
+1. Prompt template (`dynamic_question.txt`) included themes/probes but didn't instruct LLM to USE them
+2. Topic rotation instructions (Issue #2 fix) were so strong the LLM ignored the insights
+3. Theme formatting was too minimal - didn't include enough evidence for LLM to reference
+4. Probe formatting didn't include the suggested question text
 
-**Files to check:**
-- `lib/interview_studio/agents/director.ex` - `synthesize_insights/2`
-- `priv/domains/interview/prompts/director/ask_dynamic.txt`
-- `lib/interview_studio/session.ex` - `gather_insights/2`
+**Fixes applied:**
+1. `priv/domains/interview/prompts/director/dynamic_question.txt`:
+   - Added explicit section "HOW TO USE AGENT INSIGHTS"
+   - Added examples showing how to bridge themes to new topics
+   - Made it mandatory to reference discovered themes when they exist
+   - Added good/bad examples that use actual themes
+
+2. `lib/interview_studio/agents/director.ex`:
+   - `format_themes_for_prompt`: Now includes 200 chars of evidence with quote formatting
+   - `format_themes_for_prompt`: Added [strong] marker for high-confidence themes
+   - `format_probes_for_prompt`: Now includes the suggested question text
+   - `format_probes_for_prompt`: Added emoji priority markers (🔥 HIGH)
+
+**Expected results:**
+- Director questions should now reference specific themes from earlier in the conversation
+- Questions should bridge discovered insights to new topics
+- High-priority probes should be incorporated when relevant
 
 ---
 

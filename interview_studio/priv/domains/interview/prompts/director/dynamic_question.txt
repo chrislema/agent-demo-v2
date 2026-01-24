@@ -1,7 +1,7 @@
 Recent conversation:
 {{history}}
 
-=== MULTI-AGENT SYNTHESIS ===
+=== MULTI-AGENT INSIGHTS (USE THESE!) ===
 
 THEMES DISCOVERED BY STORY ANALYST:
 {{themes_text}}
@@ -21,31 +21,47 @@ CHRONOLOGICAL MOMENTUM: {{chronological_direction}}
 
 === YOUR TASK ===
 
-**YOU MUST NOW ASK ABOUT A NEW TOPIC**: {{topic_description}}
+**ASK ABOUT THE NEW TOPIC**: {{topic_description}}
 
-This is NOT a follow-up on what they just said. This is a TOPIC TRANSITION.
+IMPORTANT: You MUST use the discovered themes and probe suggestions when forming your question!
 
-TOPIC ROTATION IS MANDATORY:
-- You've already explored the previous topic enough
-- NOW pivot to ask about: {{topic_description}}
-- Create a BRIDGE from what they shared to this NEW topic
-- Do NOT ask another follow-up about what they just said
+HOW TO USE AGENT INSIGHTS:
+1. **Themes**: Reference specific themes they've already shared to create natural bridges
+   - If they mentioned "resilience" earlier, connect it: "You mentioned overcoming [X] - how does that resilience show up in [NEW TOPIC]?"
+   - If they showed "passion for teaching", bridge it: "That passion for helping others learn - how did you discover that calling?"
 
-EXAMPLE TRANSITIONS:
+2. **Probes**: If a probe suggestion relates to the new topic, use it directly or adapt it
+   - High-priority probes deserve attention
+   - Use the probe's rationale to make your question more targeted
+
+3. **Connect the dots**: The best questions tie what they've shared to what you're asking next
+
+TOPIC ROTATION WITH THEME BRIDGES:
+- Move to the new topic: {{topic_description}}
+- BUT connect it to themes/insights already discovered
+- This makes the transition feel natural, not abrupt
+
+EXAMPLE TRANSITIONS USING THEMES:
+- "You mentioned [THEME from earlier]. That connects to something I'm curious about - [NEW TOPIC related to theme]..."
+- "I noticed [PATTERN from themes]. How does that play into [NEW TOPIC]?"
+- "Earlier you talked about [DISCOVERED INSIGHT]. Tell me how that shaped [NEW TOPIC]..."
+- "That thread about [THEME] makes me wonder about [NEW TOPIC] - how are they connected for you?"
+
+EXAMPLE WITHOUT THEMES (fallback if no themes yet):
 - "That's a great insight. Shifting gears a bit - I'm curious about [NEW TOPIC]..."
-- "I love that story. Let me ask you about something different - [NEW TOPIC]..."
-- "That really resonates. Now I want to hear about [NEW TOPIC]..."
+- "I love that story. Let me ask about something different - [NEW TOPIC]..."
 
 CRITICAL REQUIREMENTS:
-1. The question MUST be about {{topic_description}} - NOT a follow-up on their last answer
-2. Use a brief acknowledgment (1 short sentence) then pivot to the new topic
-3. If themes were discovered, you can bridge TO the new topic using them
-4. Match the question depth to the engagement AND sentiment level
-5. DO NOT ask generic questions - be specific but about the NEW topic
-6. If sentiment shows ANY frustration, make the pivot even more distinct
+1. The question MUST be about {{topic_description}} - the new topic
+2. REFERENCE at least ONE discovered theme or insight if themes exist
+3. Create a BRIDGE from what they've shared (using themes) to the new topic
+4. Match the question depth to engagement AND sentiment level
+5. Be specific - use their actual words/themes, not generic questions
+6. If frustrated, keep it short but still reference what you learned
 
-BAD (staying on same topic): "Can you tell me more about that experience?"
-BAD (still probing): "What else happened during that time?"
-GOOD (topic pivot): "I appreciate you sharing that. Now I'm curious - what DRIVES you? What gets you excited to work every day?"
+BAD (ignores themes): "Tell me about your vision for the future."
+BAD (generic): "What drives you?"
+GOOD (uses themes): "You mentioned loving the challenge of [DISCOVERED THEME]. How does that drive what you're building toward?"
+GOOD (bridges insight): "That story about [SPECIFIC THING THEY SAID] - I'm curious how that shapes where you're headed..."
 
-Respond with just the question (including the brief acknowledgment and pivot).
+Respond with just the question (including the brief acknowledgment that references something they shared).

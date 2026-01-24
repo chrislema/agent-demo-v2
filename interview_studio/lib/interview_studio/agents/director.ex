@@ -1188,7 +1188,19 @@ defmodule InterviewStudio.Agents.Director do
     |> Enum.map(fn t ->
       theme = t[:theme] || t.theme || "unknown"
       evidence = t[:evidence] || t.evidence || ""
-      "- #{theme}" <> if(evidence != "", do: " (evidence: #{String.slice(evidence, 0, 100)})", else: "")
+      confidence = t[:confidence] || t.confidence || 0.5
+
+      # Format with enough evidence for the LLM to reference
+      base = "- **#{theme}**"
+      evidence_text = if evidence != "" do
+        # Include more evidence (200 chars) so LLM can reference specific words
+        " — they said: \"#{String.slice(evidence, 0, 200)}\""
+      else
+        ""
+      end
+      confidence_text = if confidence >= 0.8, do: " [strong]", else: ""
+
+      base <> confidence_text <> evidence_text
     end)
     |> Enum.join("\n")
   end
@@ -1199,9 +1211,23 @@ defmodule InterviewStudio.Agents.Director do
     |> Enum.take(3)
     |> Enum.map(fn p ->
       topic = p[:topic] || p.topic || "unknown"
+      question = p[:question] || p.question || p[:suggested_question] || ""
       rationale = p[:rationale] || p.rationale || ""
       priority = p[:priority] || p.priority || :medium
-      "- [#{priority}] #{topic}" <> if(rationale != "", do: ": #{rationale}", else: "")
+
+      # Include the suggested question so Director can use or adapt it
+      priority_label = case priority do
+        :high -> "🔥 HIGH"
+        :medium -> "MEDIUM"
+        :low -> "low"
+        _ -> "medium"
+      end
+
+      base = "- [#{priority_label}] **#{topic}**"
+      question_text = if question != "", do: "\n  Suggested: \"#{String.slice(question, 0, 150)}\"", else: ""
+      rationale_text = if rationale != "", do: "\n  Why: #{String.slice(rationale, 0, 100)}", else: ""
+
+      base <> question_text <> rationale_text
     end)
     |> Enum.join("\n")
   end
