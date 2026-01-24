@@ -667,23 +667,15 @@ defmodule InterviewStudio.Agents.Director do
   end
 
   defp decide_core_questions_action(state) do
-    # Check if we have high-priority probes from Probe Coach
-    high_probe = Enum.find(state.pending_probes, fn p -> p.priority == :high end)
-
+    # PRIORITY: Cover all 5 topics FIRST, then probe
+    # This prevents getting stuck on one topic with endless follow-ups
     cond do
-      # High-priority probe from Probe Coach - insert it (agent collaboration!)
-      high_probe != nil ->
-        %{
-          type: :probe,
-          question: high_probe.question,
-          topic: high_probe.topic,
-          source: :probe_coach
-        }
-
-      # More topics to explore - generate dynamic question
+      # More topics to explore - ALWAYS prioritize topic rotation
       state.topics_to_explore != [] ->
         # Pick next topic, considering themes and engagement
         next_topic = select_next_topic(state)
+
+        Logger.debug("[Director] Topic rotation: moving to #{next_topic}, remaining: #{inspect(state.topics_to_explore)}")
 
         %{
           type: :ask_dynamic,
@@ -694,11 +686,22 @@ defmodule InterviewStudio.Agents.Director do
           source: :collective_intelligence
         }
 
-      # All topics covered - transition to probing or synthesis
-      # CONSENSUS: Check with agents before major transitions
+      # All topics covered - now we can probe if there are pending probes
       state.pending_probes != [] ->
-        maybe_transition_with_consensus(state, :probing, "Core topics explored, probes pending")
+        # Only probe AFTER all core topics are covered
+        high_probe = Enum.find(state.pending_probes, fn p -> p.priority == :high end)
+        probe = high_probe || hd(state.pending_probes)
 
+        Logger.debug("[Director] All topics covered, now probing: #{probe.topic}")
+
+        %{
+          type: :probe,
+          question: probe.question,
+          topic: probe.topic,
+          source: :probe_coach
+        }
+
+      # All topics covered and no probes - transition to synthesis
       true ->
         maybe_transition_with_consensus(state, :synthesis, "Core topics explored")
     end

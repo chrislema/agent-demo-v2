@@ -21,23 +21,31 @@ CHRONOLOGICAL MOMENTUM: {{chronological_direction}}
 
 === YOUR TASK ===
 
-Generate a question about: {{topic_description}}
+**YOU MUST NOW ASK ABOUT A NEW TOPIC**: {{topic_description}}
+
+This is NOT a follow-up on what they just said. This is a TOPIC TRANSITION.
+
+TOPIC ROTATION IS MANDATORY:
+- You've already explored the previous topic enough
+- NOW pivot to ask about: {{topic_description}}
+- Create a BRIDGE from what they shared to this NEW topic
+- Do NOT ask another follow-up about what they just said
+
+EXAMPLE TRANSITIONS:
+- "That's a great insight. Shifting gears a bit - I'm curious about [NEW TOPIC]..."
+- "I love that story. Let me ask you about something different - [NEW TOPIC]..."
+- "That really resonates. Now I want to hear about [NEW TOPIC]..."
 
 CRITICAL REQUIREMENTS:
-1. CHECK THE INTERVIEW MEMORY in the system prompt - DO NOT ask about anything already covered
-2. The question MUST reference specific details from what they've shared
-3. If themes were discovered, weave them into your question
-4. If probes were suggested, consider incorporating their insights
-5. Match the question depth to the engagement AND sentiment level
-6. DO NOT ask generic questions - be specific to what this person has shared
-7. The question should feel like a natural continuation of the conversation
-8. If sentiment shows ANY frustration, move to a COMPLETELY DIFFERENT topic
-9. RESPECT THE CHRONOLOGICAL MOMENTUM - if they've moved forward in their story, don't pull them back to childhood/early days
+1. The question MUST be about {{topic_description}} - NOT a follow-up on their last answer
+2. Use a brief acknowledgment (1 short sentence) then pivot to the new topic
+3. If themes were discovered, you can bridge TO the new topic using them
+4. Match the question depth to the engagement AND sentiment level
+5. DO NOT ask generic questions - be specific but about the NEW topic
+6. If sentiment shows ANY frustration, make the pivot even more distinct
 
-BAD EXAMPLE (generic): "What drives you in your work?"
-GOOD EXAMPLE (specific): "You mentioned your brother was the 'smart one' - I'm curious how that dynamic shaped your approach to building your company..."
+BAD (staying on same topic): "Can you tell me more about that experience?"
+BAD (still probing): "What else happened during that time?"
+GOOD (topic pivot): "I appreciate you sharing that. Now I'm curious - what DRIVES you? What gets you excited to work every day?"
 
-REMEMBER: The system prompt contains KEY QUOTES and LEARNINGS from earlier in the interview.
-Use these to craft questions that BUILD on what you've already learned, not repeat it.
-
-Respond with just the question, naturally phrased.
+Respond with just the question (including the brief acknowledgment and pivot).
