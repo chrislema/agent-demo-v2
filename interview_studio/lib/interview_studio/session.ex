@@ -293,9 +293,12 @@ defmodule InterviewStudio.Session do
 
   @doc """
   Get the current phase of the session.
+  Returns {:ok, phase} or {:error, reason}
   """
   def current_phase(session_id) do
-    InterviewFSM.current_phase(session_id)
+    {:ok, InterviewFSM.current_phase(session_id)}
+  rescue
+    _ -> {:error, :not_found}
   end
 
   # Private functions
