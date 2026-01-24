@@ -1,0 +1,145 @@
+metrics:
+  # Phase transition quality
+  phase_transitions:
+    weight: 0.2
+    criteria:
+      correct_sequence:
+        description: "Phases follow valid transitions"
+        penalty_per_violation: 10
+      appropriate_timing:
+        description: "Not rushing or lingering too long"
+        min_exchanges_per_phase:
+          opening: 1
+          core_questions: 3
+          probing: 2
+          synthesis: 1
+        max_exchanges_per_phase:
+          opening: 5
+          core_questions: 15
+          probing: 10
+          synthesis: 3
+      premature_closing:
+        description: "Closing before adequate exploration"
+        min_themes_before_synthesis: 2
+        min_themes_before_closing: 3
+
+  # Response quality
+  response_quality:
+    weight: 0.25
+    criteria:
+      repetition:
+        description: "Director asks same/similar questions"
+        similarity_threshold: 0.7  # cosine similarity
+        penalty_per_repeat: 15
+      contextual_questions:
+        description: "Questions reference user's previous statements"
+        bonus_per_contextual: 5
+      generic_questions:
+        description: "Questions could apply to anyone"
+        penalty_per_generic: 10
+      ignored_content:
+        description: "User shares something significant, not followed up"
+        penalty_per_miss: 12
+
+  # Agent collaboration
+  agent_collaboration:
+    weight: 0.25
+    criteria:
+      theme_usage:
+        description: "Discovered themes appear in follow-up questions"
+        bonus_per_use: 5
+      probe_adoption:
+        description: "Suggested probes are used by director"
+        bonus_per_adoption: 3
+      theme_discovery_rate:
+        description: "Themes discovered per exchange"
+        target_rate: 0.3  # 1 theme per 3 exchanges
+      signal_flow:
+        description: "Healthy signal traffic between agents"
+        min_signals_per_exchange: 2
+
+  # Engagement handling
+  engagement_handling:
+    weight: 0.3
+    criteria:
+      frustration_detection:
+        description: "Correctly identifies user frustration"
+        true_positive_bonus: 10
+        false_negative_penalty: 15
+        false_positive_penalty: 5
+      end_intent_detection:
+        description: "Correctly identifies user wanting to end"
+        true_positive_bonus: 15
+        false_negative_penalty: 20
+      enthusiasm_detection:
+        description: "Recognizes high engagement moments"
+        true_positive_bonus: 5
+      graceful_exit:
+        description: "Handles exit request appropriately"
+        bonus: 10
+        penalty_if_ignored: 20
+
+issues:
+  categories:
+    repeated_questions:
+      severity: high
+      description: "Director asks the same question twice or ignores user's story content"
+      detection:
+        - type: "similarity_check"
+          threshold: 0.7
+        - type: "content_reference"
+          check: "director_references_user_content"
+
+    missed_emotional_cues:
+      severity: high
+      description: "Agents fail to detect frustration, enthusiasm, or end-intent"
+      detection:
+        - type: "signal_check"
+          expected: "observer.status.engagement"
+          condition: "frustration_level > 0.5"
+          action_expected: "acknowledge_or_exit"
+
+    poor_phase_transitions:
+      severity: medium
+      description: "Closing too early, probing too long, skipping synthesis"
+      detection:
+        - type: "phase_timing"
+          check: "exchanges_in_phase"
+        - type: "phase_sequence"
+          check: "valid_transitions"
+
+    weak_collaboration:
+      severity: medium
+      description: "Themes discovered but not used, probe suggestions ignored"
+      detection:
+        - type: "theme_usage"
+          check: "themes_in_questions"
+        - type: "probe_adoption"
+          check: "probes_used"
+
+scoring:
+  excellent:
+    min_score: 85
+    description: "Agent behavior is high quality across all dimensions"
+
+  good:
+    min_score: 70
+    description: "Agent behavior is acceptable with minor issues"
+
+  needs_improvement:
+    min_score: 50
+    description: "Noticeable issues that should be addressed"
+
+  poor:
+    min_score: 0
+    description: "Significant problems requiring immediate attention"
+
+comparison:
+  regression_thresholds:
+    score_drop: 5        # Points drop to flag as regression
+    new_issues: 2        # Number of new issues to flag
+    error_rate: 0.1      # 10% increase in error rate
+
+  improvement_thresholds:
+    score_increase: 5    # Points increase to flag as improvement
+    resolved_issues: 2   # Number of resolved issues to flag
