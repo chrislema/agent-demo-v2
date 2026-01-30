@@ -1,20 +1,28 @@
-Analyze this interview response for sentiment and intent.
+Analyze this interview exchange:
 
-User said: "{{message}}"
+INTERVIEWER ASKED: "{{question}}"
+
+USER RESPONDED: "{{message}}"
 
 Determine:
-1. frustration_level: none | mild | moderate | high
-2. user_intent: continue | change_topic | end_interview
-3. chronological_direction: forward | backward | neutral
+1. frustration_level: Is the user frustrated, irritated, or impatient?
+2. user_intent: Do they want to continue, change topics, or end?
+3. chronological_direction: Did they MOVE FORWARD or BACKWARD in their life story?
 
-Guidelines:
-- "Can we move on" or "let's move on" = change_topic (NOT end_interview, NOT frustration)
-- "I don't want to talk about X" = change_topic (NOT end_interview)
-- "Let's wrap up" or "I'm done" or "let's end" = end_interview
-- Short answers alone are NOT frustration - only explicit irritation is frustration
-- "already told you" or "I already said" = mild/moderate frustration
-- Talking about future/career/goals/vision = forward
-- Talking about childhood/early years/growing up = backward
-- Most responses are neutral chronologically
+CHRONOLOGICAL DIRECTION (this is about temporal progression, not keywords):
+- FORWARD: User was asked about an earlier life stage but pivoted to a LATER stage
+  Example: Asked about early influences → talked about college, first job, career
+  Example: Asked about origin → discussed what they're building now
+- BACKWARD: User was asked about current/future but went to an EARLIER stage
+  Example: Asked about vision → talked about early memories or formative experiences
+- NEUTRAL: User stayed at roughly the same life stage as the question
+
+Think about WHERE in the life timeline the question was asking, and WHERE the user's response actually went.
+
+Intent guidelines:
+- "Can we move on" or "let's move on" = change_topic (NOT frustration)
+- "I don't want to talk about X" = change_topic
+- "Let's wrap up" or "I'm done" = end_interview
+- Short answers alone are NOT frustration
 
 Respond with ONLY the JSON, no other text.

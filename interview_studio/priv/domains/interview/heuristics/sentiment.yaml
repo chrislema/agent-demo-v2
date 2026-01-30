@@ -41,6 +41,7 @@ frustration_phrases:
     - "mentioned before"
 
 # Chronological direction keywords
+# These detect when user is moving forward or backward in their life story
 chronological_keywords:
   forward:
     - future
@@ -51,13 +52,28 @@ chronological_keywords:
     - plan
     - next
     - building
+    - college
+    - university
+    - graduated
+    - first job
+    - job
+    - work
+    - company
+    - started working
+    - professional
+    - currently
+    - now i
+    - these days
   backward:
-    - childhood
     - grew up
-    - when i was young
+    - when i was younger
     - early years
     - back then
     - used to be
+    - my parents
+    - in school
+    - high school
+    - before college
 
 # Frustration recommendations
 frustration_recommendations:

@@ -34,7 +34,8 @@ defmodule InterviewStudio.Agents.SentimentAgent do
     :current_phase,          # From phase changes - affects frustration tolerance
     :llm_config,             # LLM configuration for semantic analysis
     :domain,                 # PHASE 4: Domain configuration
-    :heuristics              # PHASE 4: Agent-specific heuristics from YAML
+    :heuristics,             # PHASE 4: Agent-specific heuristics from YAML
+    :last_question           # Track last question asked for context
   ]
 
   # LLM timeout for graceful degradation
@@ -200,6 +201,14 @@ defmodule InterviewStudio.Agents.SentimentAgent do
     end
   end
 
+  # Track interviewer questions for context in temporal analysis
+  @impl true
+  def handle_info({:signal, %{type: "interview.utterance.host"} = signal}, state) do
+    question = signal.data[:content] || ""
+    Logger.debug("[SentimentAgent] Tracking last question for context: #{String.slice(question, 0, 50)}...")
+    {:noreply, %{state | last_question: question}}
+  end
+
   @impl true
   def handle_info({:signal, _}, state), do: {:noreply, state}
 
@@ -254,8 +263,9 @@ defmodule InterviewStudio.Agents.SentimentAgent do
 
   # LLM-based sentiment analysis with timeout and fallback
   defp analyze_message_sentiment_llm(message, state) do
-    # Start async LLM call with timeout
-    task = Task.async(fn -> call_sentiment_llm(message, state.llm_config) end)
+    # Start async LLM call with timeout - pass question context for semantic understanding
+    last_question = state.last_question || "Tell me about yourself"
+    task = Task.async(fn -> call_sentiment_llm(message, last_question, state.llm_config) end)
 
     case Task.yield(task, @llm_timeout_ms) do
       {:ok, {:ok, result}} ->
@@ -276,13 +286,13 @@ defmodule InterviewStudio.Agents.SentimentAgent do
   end
 
   # Call LLM for semantic sentiment analysis
-  defp call_sentiment_llm(message, config) do
+  defp call_sentiment_llm(message, question, config) do
     system_prompt = PromptLoader.load!("interview", "sentiment_agent", "system",
       default_sentiment_system_prompt())
 
-    variables = %{message: message}
+    variables = %{message: message, question: question}
     user_prompt = PromptLoader.load_with_vars!("interview", "sentiment_agent", "analyze", variables,
-      default_sentiment_analyze_prompt(message))
+      default_sentiment_analyze_prompt(message, question))
 
     try do
       api_key = System.get_env("AgentDemo_Groq_API_Key") || ""
@@ -329,10 +339,15 @@ defmodule InterviewStudio.Agents.SentimentAgent do
   end
 
   # Fallback analyze prompt
-  defp default_sentiment_analyze_prompt(message) do
+  defp default_sentiment_analyze_prompt(message, question) do
     """
-    Analyze this interview response for sentiment and intent.
-    User said: "#{message}"
+    Analyze this interview exchange for sentiment, intent, and temporal direction.
+
+    INTERVIEWER ASKED: "#{question}"
+    USER RESPONDED: "#{message}"
+
+    For chronological_direction, consider: Did the user stay at the life stage the question asked about, move forward in their story (e.g., origin/background question but they pivoted to college/career), or move backward (e.g., career question but they went back to early influences)?
+
     Respond with ONLY JSON: {"frustration_level": "none|mild|moderate|high", "user_intent": "continue|change_topic|end_interview", "chronological_direction": "forward|backward|neutral"}
     """
   end
@@ -467,7 +482,7 @@ defmodule InterviewStudio.Agents.SentimentAgent do
   defp default_chronological_keywords do
     %{
       forward: ["future", "goal", "vision", "career", "working toward"],
-      backward: ["childhood", "grew up", "when i was young", "early years"]
+      backward: ["grew up", "when i was younger", "early years", "back then"]
     }
   end
 

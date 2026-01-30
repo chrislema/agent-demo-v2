@@ -73,6 +73,6 @@ frustration_guidance:
 
 # Chronological direction guidance
 chronological_guidance:
-  forward: "User is talking about future/current work - RESPECT THIS MOMENTUM. Ask about vision, goals, current projects. Do NOT pull them back to childhood or early years."
+  forward: "User is talking about future/current work - RESPECT THIS MOMENTUM. Ask about vision, goals, current projects. Do NOT pull them back to earlier life stages."
   backward: "User is discussing their past. That's fine, but don't push further back than they've gone. Look for opportunities to bridge to the present/future."
   neutral: "No strong chronological preference - follow the natural flow of conversation."

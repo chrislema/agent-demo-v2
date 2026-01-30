@@ -651,17 +651,26 @@ defmodule InterviewStudio.Agents.Director do
 
     case state.chronological_direction do
       :forward ->
-        # Prefer forward-looking topics: vision, passion, differentiation
-        forward_topics = [:vision, :passion, :differentiation]
-        Enum.find(forward_topics, fn t -> t in remaining end) || hd(remaining)
+        # Prefer forward-looking topics from config (vision, passion, differentiation)
+        forward_topics = state.config[:forward_topics] || [:vision, :passion, :differentiation]
+        selected = Enum.find(forward_topics, fn t -> t in remaining end) || hd(remaining)
+        Logger.info("[Director] MOMENTUM: User moved FORWARD in time -> selecting forward topic: #{selected} (from #{inspect(forward_topics)})")
+        selected
 
       :backward ->
         # User is talking about the past - let them, but don't encourage regression
         # Still prioritize forward topics unless they explicitly want origin
-        hd(remaining)
+        selected = hd(remaining)
+        Logger.debug("[Director] MOMENTUM: User in backward mode -> using default: #{selected}")
+        selected
 
       :neutral ->
         # No preference - use standard topic selection
+        Logger.debug("[Director] MOMENTUM: Neutral -> using standard selection")
+        select_next_topic(state)
+
+      _ ->
+        # No direction set yet - use standard selection
         select_next_topic(state)
     end
   end
@@ -672,8 +681,9 @@ defmodule InterviewStudio.Agents.Director do
     cond do
       # More topics to explore - ALWAYS prioritize topic rotation
       state.topics_to_explore != [] ->
-        # Pick next topic, considering themes and engagement
-        next_topic = select_next_topic(state)
+        # Pick next topic, RESPECTING USER'S TEMPORAL MOMENTUM
+        # If user moved forward in time (origin -> college -> career), don't pull them back
+        next_topic = select_topic_respecting_momentum(state)
 
         Logger.debug("[Director] Topic rotation: moving to #{next_topic}, remaining: #{inspect(state.topics_to_explore)}")
 
