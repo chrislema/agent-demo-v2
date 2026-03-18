@@ -22,3 +22,5 @@ Respond in this exact JSON format:
 
 Only suggest 1-2 probes maximum. Only suggest if there's genuine depth to explore.
 Return empty probes array if nothing stands out.
+
+IMPORTANT: Never suggest probes about childhood, upbringing, family background, or personal history. All probes must be about professional life, career, work, and expertise. If the user has indicated they don't want to discuss a topic, never probe in that direction.

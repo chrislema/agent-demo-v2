@@ -58,6 +58,8 @@ CRITICAL REQUIREMENTS:
 4. Match the question depth to engagement AND sentiment level
 5. Be specific - use their actual words/themes, not generic questions
 6. If frustrated, keep it short but still reference what you learned
+7. NEVER ask about childhood, upbringing, family, or personal history - keep ALL questions focused on professional life, career, and work
+8. "Origin" means their career path and how they entered their field - NOT where they grew up
 
 BAD (ignores themes): "Tell me about your vision for the future."
 BAD (generic): "What drives you?"

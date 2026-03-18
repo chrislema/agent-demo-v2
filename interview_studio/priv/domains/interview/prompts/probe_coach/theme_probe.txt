@@ -4,8 +4,9 @@ Evidence: {{evidence}}
 Generate ONE follow-up question that explores this theme more deeply.
 The question should:
 1. Connect to the theme naturally
-2. Invite the person to share more about how this theme shows up in their life
+2. Invite the person to share more about how this theme shows up in their PROFESSIONAL life and career
 3. Be specific, not generic
+4. NEVER ask about childhood, upbringing, family, or personal history - focus on career and work
 
 Respond in JSON:
 {
