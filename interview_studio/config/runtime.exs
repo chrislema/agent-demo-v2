@@ -1,10 +1,10 @@
 import Config
 
-# Configure jido_ai with Groq API key
+# Configure ReqLLM with Groq API key
+# ReqLLM looks for keys under config :req_llm, NOT config :jido_ai
 if groq_api_key = System.get_env("AgentDemo_Groq_API_Key") do
-  config :jido_ai, :keyring, %{
+  config :req_llm,
     groq_api_key: groq_api_key
-  }
 end
 
 # config/runtime.exs is executed for all environments, including

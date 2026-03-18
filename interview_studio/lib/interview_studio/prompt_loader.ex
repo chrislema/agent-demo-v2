@@ -13,9 +13,12 @@ defmodule InterviewStudio.PromptLoader do
 
   require Logger
 
-  @prompts_base_dir "priv/domains"
   @default_domain "interview"
   @cache_table :prompt_cache
+
+  defp prompts_base_dir do
+    Application.app_dir(:interview_studio, "priv/domains")
+  end
 
   @doc """
   Initialize the prompt cache. Call during application startup.
@@ -157,7 +160,7 @@ defmodule InterviewStudio.PromptLoader do
 
   defp build_path(domain, agent, prompt_name) do
     # Support both .txt and .md extensions
-    base = Path.join([@prompts_base_dir, domain, "prompts", agent, prompt_name])
+    base = Path.join([prompts_base_dir(), domain, "prompts", agent, prompt_name])
 
     cond do
       File.exists?("#{base}.txt") -> "#{base}.txt"
