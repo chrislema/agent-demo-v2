@@ -285,6 +285,6 @@ defmodule InterviewStudio.AgentSupervisor do
 
   # Default agent types (fallback when no domain config)
   defp default_agent_types do
-    [:fsm, :director, :scribe, :story_analyst, :probe_coach, :engagement_monitor, :timer_agent, :sentiment_agent]
+    [:director, :scribe, :story_analyst, :probe_coach, :engagement_monitor, :timer_agent, :sentiment_agent]
   end
 end

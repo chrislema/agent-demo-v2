@@ -6,11 +6,6 @@
 agents:
   # Critical agents - session fails if these don't start
   critical:
-    - id: fsm
-      module: InterviewStudio.Pipeline.InterviewFSM
-      description: "Interview state machine - manages phase transitions"
-      requires_llm: false
-
     - id: director
       module: InterviewStudio.Agents.Director
       description: "Orchestrator - formulates questions and synthesizes agent input"
@@ -70,19 +65,18 @@ subscriptions:
 
   probe_coach:
     - "interview.utterance.user"
-    - "direct.probe_coach"
     - "analyst.theme.discovered"
     - "observer.status.engagement"
     - "observer.status.frustration"
 
   sentiment_agent:
     - "interview.utterance.user"
+    - "interview.utterance.host"
     - "observer.status.engagement"
     - "interview.phase.**"
 
   engagement_monitor:
-    - "interview.utterance.**"
-    - "observer.status.sentiment"
+    - "interview.utterance.user"
 
   timer_agent:
     - "interview.phase.**"
@@ -90,7 +84,4 @@ subscriptions:
 
   scribe:
     - "interview.utterance.**"
-    - "interview.phase.**"
-
-  fsm:
     - "interview.phase.**"

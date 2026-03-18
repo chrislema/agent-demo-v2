@@ -12,7 +12,7 @@ defmodule InterviewStudio.Testing.FeedbackLoop.ConversationRunner do
   alias InterviewStudio.Testing.FeedbackLoop.IntervieweeAgent
   alias InterviewStudio.Testing.FeedbackLoop.Evaluator
   alias InterviewStudio.Testing.FeedbackLoop.Persona
-  alias InterviewStudio.Pipeline.InterviewFSM
+  alias InterviewStudio.Agents.Director
 
   @default_max_exchanges 20
   @exchange_timeout 60_000
@@ -237,7 +237,7 @@ defmodule InterviewStudio.Testing.FeedbackLoop.ConversationRunner do
     case Session.current_phase(session_id) do
       {:ok, :preparation} ->
         # Transition to opening
-        case InterviewFSM.transition(session_id, :opening, "Automated test start") do
+        case Director.transition(session_id, :opening, "Automated test start") do
           {:ok, _} -> :ok
           {:error, _} -> :ok # May already be in opening
         end

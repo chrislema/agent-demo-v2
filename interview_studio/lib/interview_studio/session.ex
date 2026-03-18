@@ -7,14 +7,13 @@ defmodule InterviewStudio.Session do
   - Fallback text comes from YAML config, not hardcoded values
 
   Responsibilities:
-  - Start/stop FSM, Director, and all observers together
+  - Start/stop Director and all observer agents together
   - Provide unified API for session management
   - Track session state across all components
   """
 
   require Logger
 
-  alias InterviewStudio.Pipeline.InterviewFSM
   alias InterviewStudio.Agents.{Director, Scribe, StoryAnalyst, ProbeCoach, EngagementMonitor}
   alias InterviewStudio.InterviewBus
   alias InterviewStudio.Performance
@@ -62,7 +61,7 @@ defmodule InterviewStudio.Session do
   def get_session_state(session_id) do
     %{
       session_id: session_id,
-      fsm_phase: get_fsm_phase(session_id),
+      phase: get_current_phase(session_id),
       director: get_director_state(session_id),
       scribe: get_scribe_state(session_id),
       engagement: get_engagement_level(session_id),
@@ -288,7 +287,7 @@ defmodule InterviewStudio.Session do
   Transition the session to a new phase.
   """
   def transition_to(session_id, phase, reason \\ "Manual transition") do
-    InterviewFSM.transition(session_id, phase, reason)
+    Director.transition(session_id, phase, reason)
   end
 
   @doc """
@@ -296,7 +295,7 @@ defmodule InterviewStudio.Session do
   Returns {:ok, phase} or {:error, reason}
   """
   def current_phase(session_id) do
-    {:ok, InterviewFSM.current_phase(session_id)}
+    {:ok, Director.current_phase(session_id)}
   rescue
     _ -> {:error, :not_found}
   end
@@ -304,8 +303,8 @@ defmodule InterviewStudio.Session do
   # Private functions
   # Note: Agent start/stop moved to AgentSupervisor for Phase 7 failure isolation
 
-  defp get_fsm_phase(session_id) do
-    case InterviewFSM.current_phase(session_id) do
+  defp get_current_phase(session_id) do
+    case Director.current_phase(session_id) do
       phase when is_atom(phase) -> phase
       _ -> :unknown
     end
@@ -352,31 +351,23 @@ defmodule InterviewStudio.Session do
   end
 
   defp do_transition(session_id, %{to_phase: phase, reason: reason} = _action) do
-    # Handle race condition: FSM might be shutting down during cleanup
-    # This is not an error - it means the session is already being closed
+    # Director now owns the FSM — transition validates and updates phase in one call
     result = try do
-      InterviewFSM.transition(session_id, phase, reason)
+      Director.transition(session_id, phase, reason)
     catch
       :exit, {:shutdown, _} ->
-        Logger.debug("[Session] FSM shutting down during transition to #{phase} - session closing")
+        Logger.debug("[Session] Director shutting down during transition to #{phase} - session closing")
         {:ok, phase}
       :exit, :shutdown ->
-        Logger.debug("[Session] FSM shutdown during transition to #{phase} - session closing")
+        Logger.debug("[Session] Director shutdown during transition to #{phase} - session closing")
         {:ok, phase}
       :exit, {:noproc, _} ->
-        Logger.debug("[Session] FSM not found during transition to #{phase} - session already closed")
+        Logger.debug("[Session] Director not found during transition to #{phase} - session already closed")
         {:ok, phase}
     end
 
     case result do
       {:ok, ^phase} ->
-        # Sync Director's phase immediately (don't wait for async signal)
-        try do
-          Director.set_phase(session_id, phase)
-        catch
-          :exit, _ -> :ok  # Director might also be shutting down
-        end
-
         # After transitioning, get the next action (question/probe/etc)
         # This ensures we ask the first question after entering a new phase
         if phase in [:opening, :core_questions, :probing, :synthesis, :closing] do
@@ -390,7 +381,6 @@ defmodule InterviewStudio.Session do
           {:ok, nil}
         end
       {:ok, _other_phase} ->
-        # Already in a different phase (idempotent transition returned current state)
         {:ok, nil}
       {:error, err} ->
         {:error, err}

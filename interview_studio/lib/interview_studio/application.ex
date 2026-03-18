@@ -11,9 +11,11 @@ defmodule InterviewStudio.Application do
       InterviewStudioWeb.Telemetry,
       {DNSCluster, query: Application.get_env(:interview_studio, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: InterviewStudio.PubSub},
-      # Registry for session management (FSM, agents)
+      # Jido Instance: TaskSupervisor, Registry, DynamicSupervisor for agents
+      InterviewStudio.Jido,
+      # Registry for session-scoped agent management
       {Registry, keys: :unique, name: InterviewStudio.SessionRegistry},
-      # Interview signal bus for multi-agent communication
+      # Interview signal bus for multi-agent communication (backed by Jido.Signal.Bus)
       InterviewStudio.InterviewBus,
       # Phase 7: Performance monitoring, circuit breakers, and caching
       InterviewStudio.Performance,

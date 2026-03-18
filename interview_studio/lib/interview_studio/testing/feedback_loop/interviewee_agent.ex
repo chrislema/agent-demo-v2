@@ -200,23 +200,12 @@ defmodule InterviewStudio.Testing.FeedbackLoop.IntervieweeAgent do
   end
 
   defp call_llm(messages, llm_config) do
-    # Use the same Jido.AI infrastructure as the interview agents
     try do
-      # Build Model struct with API key from environment (Groq via OpenAI-compatible API)
-      api_key = System.get_env("AgentDemo_Groq_API_Key") || ""
+      model_name = llm_config.model || "meta-llama/llama-4-scout-17b-16e-instruct"
 
-      model = %Jido.AI.Model{
-        provider: :openrouter,
-        base_url: "https://api.groq.com/openai/v1/chat/completions",
-        model: llm_config.model || "meta-llama/llama-4-scout-17b-16e-instruct",
-        api_key: api_key,
-        temperature: llm_config.temperature || 0.7,
-        max_tokens: llm_config.max_tokens || 1000
-      }
-
-      # Convert messages to Jido format
-      jido_messages =
-        Enum.map(messages, fn msg ->
+      # Extract system prompt and build conversation as a single prompt
+      {system_prompt, conversation_messages} =
+        Enum.reduce(messages, {nil, []}, fn msg, {sys, conv} ->
           role =
             case msg.role || msg["role"] do
               "system" -> :system
@@ -227,16 +216,24 @@ defmodule InterviewStudio.Testing.FeedbackLoop.IntervieweeAgent do
             end
 
           content = msg.content || msg["content"]
-          %{role: role, content: content}
+
+          case role do
+            :system -> {content, conv}
+            _ -> {sys, conv ++ ["#{role}: #{content}"]}
+          end
         end)
 
-      # Build Prompt with messages
-      prompt = Jido.AI.Prompt.new(%{messages: jido_messages})
+      prompt = Enum.join(conversation_messages, "\n\n")
 
-      # Call Langchain action
-      case Jido.AI.Actions.Langchain.run(%{model: model, prompt: prompt}, %{}) do
-        {:ok, %{content: content}} -> {:ok, content}
-        {:ok, result} when is_map(result) -> {:ok, Map.get(result, :content, inspect(result))}
+      case Jido.Exec.run(Jido.AI.Actions.LLM.Chat, %{
+        model: "groq:#{model_name}",
+        prompt: prompt,
+        system_prompt: system_prompt,
+        temperature: llm_config.temperature || 0.7,
+        max_tokens: llm_config.max_tokens || 1000
+      }) do
+        {:ok, %{text: content}} -> {:ok, content}
+        {:ok, result} when is_map(result) -> {:ok, Map.get(result, :text, inspect(result))}
         {:error, reason} -> {:error, reason}
       end
     rescue

@@ -64,9 +64,11 @@ defmodule InterviewStudio.MixProject do
       # Config file parsing
       {:yaml_elixir, "~> 2.9"},
 
-      # Jido Framework - using Hex versions for stability
-      {:jido, "~> 1.2", override: true},
-      {:jido_ai, "~> 0.5", override: true},
+      # Jido Framework 2.0
+      {:jido, "~> 2.1"},
+      {:jido_signal, "~> 2.0"},
+      {:jido_action, "~> 2.1"},
+      {:jido_ai, "~> 2.0"},
       {:jido_chat, github: "agentjido/jido_chat", branch: "main"}
     ]
   end

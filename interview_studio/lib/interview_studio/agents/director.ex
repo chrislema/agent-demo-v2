@@ -2,28 +2,88 @@ defmodule InterviewStudio.Agents.Director do
   @moduledoc """
   The Director Agent - the orchestrator and user-facing voice.
 
-  Phase 4: Domain-Agnostic Architecture
-  - Loads heuristics from domain config (heuristics/director.yaml)
-  - Uses consensus weights from domain config
-  - Topic keywords come from config, not hardcoded
+  Merged with InterviewFSM for phase management.
+  Converted to Jido.Agent with signal_routes and Actions.
 
   Responsibilities:
   - Formulate natural, warm questions
   - Decide whether to follow script, probe deeper, or transition
   - Synthesize swarm input into conversational decisions
   - Maintain interview flow and pacing
-
-  The Director subscribes to signals defined in domain config.
+  - Validate and execute phase transitions (previously InterviewFSM)
   """
 
-  use GenServer
+  use Jido.Agent,
+    name: "director",
+    description: "Orchestrates interview flow, generates questions, manages phase transitions",
+    schema: [
+      session_id: [type: :any, default: nil],
+      current_phase: [type: :atom, default: :preparation],
+      topics_explored: [type: :any, default: []],
+      topics_to_explore: [type: :any, default: []],
+      active_themes: [type: :any, default: []],
+      pending_probes: [type: :any, default: []],
+      engagement_level: [type: :atom, default: :high],
+      conversation_history: [type: :any, default: []],
+      last_user_message: [type: :any, default: nil],
+      llm_config: [type: :any, default: %{}],
+      synthesis_delivered: [type: :boolean, default: false],
+      user_responded_to_synthesis: [type: :boolean, default: false],
+      last_insights: [type: :any, default: %{}],
+      questions_asked: [type: :any, default: []],
+      frustration_level: [type: :atom, default: :none],
+      user_intent: [type: :atom, default: :continue],
+      chronological_direction: [type: :atom, default: :neutral],
+      config: [type: :any, default: %{}],
+      domain: [type: :any, default: nil],
+      heuristics: [type: :any, default: %{}],
+      # FSM fields (merged from InterviewFSM)
+      phase_history: [type: :any, default: []],
+      phase_started_at: [type: :any, default: nil],
+      # Result fields for sync call extraction
+      last_action_result: [type: :any, default: nil],
+      last_response_result: [type: :any, default: nil],
+      last_transition_result: [type: :any, default: nil],
+      last_votes_result: [type: :any, default: nil],
+      last_consensus_result: [type: :any, default: nil]
+    ],
+    signal_routes: [
+      # Async observer signals
+      {"interview.phase.entered", InterviewStudio.Agents.Director.Actions.HandlePhaseEntered},
+      {"interview.phase.changed", InterviewStudio.Agents.Director.Actions.HandlePhaseEntered},
+      {"observer.insight.theme", InterviewStudio.Agents.Director.Actions.HandleInsightTheme},
+      {"observer.suggestion.probe", InterviewStudio.Agents.Director.Actions.HandleSuggestionProbe},
+      {"observer.status.engagement", InterviewStudio.Agents.Director.Actions.HandleEngagementStatus},
+      {"observer.status.frustration", InterviewStudio.Agents.Director.Actions.HandleFrustrationStatus},
+      {"observer.status.sentiment", InterviewStudio.Agents.Director.Actions.HandleSentimentStatus},
+      {"observer.status.timer", InterviewStudio.Agents.Director.Actions.HandleTimerStatus},
+      # Sync command signals
+      {"director.cmd.user_message", InterviewStudio.Agents.Director.Actions.ProcessUserMessage},
+      {"director.cmd.next_action", InterviewStudio.Agents.Director.Actions.DecideNextAction},
+      {"director.cmd.generate_response", InterviewStudio.Agents.Director.Actions.GenerateResponse},
+      {"director.cmd.set_phase", InterviewStudio.Agents.Director.Actions.SetPhase},
+      {"director.cmd.host_message", InterviewStudio.Agents.Director.Actions.RecordHostMessage},
+      {"director.cmd.transition", InterviewStudio.Agents.Director.Actions.TransitionPhase},
+      {"director.cmd.poll_transition", InterviewStudio.Agents.Director.Actions.PollTransition},
+      {"director.cmd.check_consensus", InterviewStudio.Agents.Director.Actions.CheckConsensus}
+    ]
+
   require Logger
 
   alias InterviewStudio.InterviewBus
   alias InterviewStudio.Pipeline.Phases
-  alias InterviewStudio.PromptLoader
   alias InterviewStudio.ConfigLoader
   alias InterviewStudio.DomainLoader
+
+  # FSM transition map (merged from InterviewFSM)
+  @transitions %{
+    preparation: [:opening],
+    opening: [:core_questions],
+    core_questions: [:probing, :synthesis, :closing],
+    probing: [:core_questions, :synthesis, :closing],
+    synthesis: [:closing],
+    closing: []
+  }
 
   # Default config (used if YAML file not found)
   @default_config %{
@@ -54,549 +114,223 @@ defmodule InterviewStudio.Agents.Director do
     }
   }
 
-  defstruct [
-    :session_id,
-    :current_phase,
-    :topics_explored,       # Categories/topics we've covered
-    :topics_to_explore,     # Categories/topics still to explore
-    :active_themes,
-    :pending_probes,
-    :engagement_level,
-    :conversation_history,
-    :last_user_message,
-    :llm_config,
-    :synthesis_delivered,
-    :user_responded_to_synthesis,
-    :last_insights,         # Most recent insights from parallel analysis
-    :questions_asked,       # Track questions to prevent repetition
-    :frustration_level,     # Track user frustration from sentiment agent
-    :user_intent,           # Semantic intent: :continue, :change_topic, :end_interview
-    :chronological_direction, # Momentum preference: :forward, :backward, :neutral
-    :config,                # Loaded configuration
-    :domain,                # PHASE 4: Domain configuration
-    :heuristics             # PHASE 4: Agent-specific heuristics from YAML
-  ]
-
+  # ==========================================================================
   # Client API
+  # ==========================================================================
 
   def start_link(opts \\ []) do
     session_id = Keyword.fetch!(opts, :session_id)
-    GenServer.start_link(__MODULE__, opts, name: via_tuple(session_id))
-  end
-
-  def get_state(session_id) do
-    GenServer.call(via_tuple(session_id), :get_state)
-  end
-
-  def process_user_message(session_id, message) do
-    GenServer.call(via_tuple(session_id), {:user_message, message}, 30_000)
-  end
-
-  def get_next_action(session_id, insights \\ %{}) do
-    GenServer.call(via_tuple(session_id), {:get_next_action, insights}, 30_000)
-  end
-
-  def generate_response(session_id, action_type, context) do
-    GenServer.call(via_tuple(session_id), {:generate_response, action_type, context}, 60_000)
-  end
-
-  def set_phase(session_id, phase) do
-    GenServer.call(via_tuple(session_id), {:set_phase, phase})
-  end
-
-  def record_host_message(session_id, message) do
-    GenServer.call(via_tuple(session_id), {:host_message, message})
-  end
-
-  @doc """
-  Poll all observer agents for their vote on transitioning to a new phase.
-  Returns a map of agent votes: %{agent_name: {:ready | :not_ready | :abstain, rationale}}
-  Used for consensus-based phase transitions.
-  """
-  def poll_transition_readiness(session_id, target_phase) do
-    GenServer.call(via_tuple(session_id), {:poll_transition, target_phase}, 10_000)
-  end
-
-  @doc """
-  Check if there's consensus for a phase transition based on agent votes.
-  Returns {:consensus, votes} or {:no_consensus, votes}
-  """
-  def check_transition_consensus(session_id, target_phase) do
-    GenServer.call(via_tuple(session_id), {:check_consensus, target_phase}, 10_000)
-  end
-
-  # Server Callbacks
-
-  @impl true
-  def init(opts) do
-    session_id = Keyword.fetch!(opts, :session_id)
     llm_config = Keyword.get(opts, :llm_config, default_llm_config())
-
-    # PHASE 4: Get domain from opts (passed by AgentSupervisor)
     domain = Keyword.get(opts, :domain)
 
-    # PHASE 4: Load heuristics from domain config, fall back to legacy config
     heuristics = if domain do
       DomainLoader.get_heuristics(domain, :director)
     else
       %{}
     end
 
-    # Merge heuristics with legacy config loader for backward compatibility
     config = ConfigLoader.load_with_defaults(:director, @default_config)
     config = deep_merge_config(config, heuristics)
 
-    # Get core categories from domain phases or use default
     core_categories = if domain do
       domain.phases[:core_categories] || Phases.core_categories()
     else
       Phases.core_categories()
     end
 
-    state = %__MODULE__{
-      session_id: session_id,
-      current_phase: :preparation,
-      topics_explored: [],
-      topics_to_explore: core_categories,
-      active_themes: [],
-      pending_probes: [],
-      engagement_level: :high,
-      conversation_history: [],
-      last_user_message: nil,
-      llm_config: llm_config,
-      synthesis_delivered: false,
-      user_responded_to_synthesis: false,
-      last_insights: %{},
-      questions_asked: [],
-      frustration_level: :none,
-      user_intent: :continue,
-      chronological_direction: :neutral,
-      config: config,
-      domain: domain,
-      heuristics: heuristics
-    }
+    now = DateTime.utc_now()
 
-    # PHASE 4: Subscribe based on domain config or use defaults
-    subscribe_to_signals(domain)
+    {:ok, pid} = Jido.AgentServer.start_link(
+      agent: __MODULE__,
+      name: via_tuple(session_id),
+      id: "director_#{session_id}",
+      register_global: false,
+      initial_state: %{
+        session_id: session_id,
+        topics_to_explore: core_categories,
+        llm_config: llm_config,
+        config: config,
+        domain: domain,
+        heuristics: heuristics,
+        phase_started_at: now
+      }
+    )
+
+    # Subscribe to InterviewBus signals
+    subscribe_to_signals(domain, pid)
+
+    # Emit initial phase entered signal
+    emit_phase_entered_signal(:preparation)
 
     Logger.info("[Director] Started for session #{session_id} (domain: #{domain && domain.name || "default"})")
-    {:ok, state}
+    {:ok, pid}
   end
 
-  # Deep merge two configs (heuristics override base config)
-  defp deep_merge_config(base, override) when is_map(base) and is_map(override) do
-    Map.merge(base, override, fn
-      _k, base_val, override_val when is_map(base_val) and is_map(override_val) ->
-        deep_merge_config(base_val, override_val)
-      _k, _base_val, override_val ->
-        override_val
-    end)
-  end
-  defp deep_merge_config(_base, override), do: override
-
-  @impl true
-  def handle_call(:get_state, _from, state) do
-    {:reply, state, state}
+  def get_state(session_id) do
+    get_agent_state(session_id)
   end
 
-  @impl true
-  def handle_call({:user_message, message}, _from, state) do
-    # Skip empty messages (used to kick off the interview)
-    if message == "" or message == nil do
-      {:reply, :ok, state}
-    else
-      Logger.debug("[Director] Processing user message: #{String.slice(message, 0, 50)}...")
-
-      # Record the message
-      timestamp = DateTime.utc_now()
-
-      new_history = [
-        %{role: :user, content: message, timestamp: timestamp}
-        | state.conversation_history
-      ]
-
-      # Publish user utterance signal
-      publish_user_utterance(message, state.current_phase)
-
-      new_state = %{state |
-        conversation_history: new_history,
-        last_user_message: message
-      }
-
-      # Track if user responded after synthesis was delivered
-      new_state = if state.current_phase == :synthesis and state.synthesis_delivered do
-        %{new_state | user_responded_to_synthesis: true}
-      else
-        new_state
-      end
-
-      {:reply, :ok, new_state}
+  def process_user_message(session_id, message) do
+    case send_cmd_signal(session_id, "director.cmd.user_message", %{content: message}, 30_000) do
+      {:ok, _agent} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 
-  @impl true
-  def handle_call({:get_next_action, insights}, _from, state) do
-    # MULTI-AGENT: Merge gathered insights into state for decision-making
-    # This is where parallel agent analysis influences the Director's decisions
-    state_with_insights = merge_insights_into_state(state, insights)
-
-    action = decide_next_action(state_with_insights)
-    # Update state based on action taken
-    new_state = apply_action_to_state(action, state_with_insights)
-
-    # Log the synthesis for debugging
-    Logger.debug("[Director] Synthesized action from insights: #{inspect(action.type)}")
-
-    {:reply, action, new_state}
+  def get_next_action(session_id, insights \\ %{}) do
+    case send_cmd_signal(session_id, "director.cmd.next_action", %{insights: insights}, 30_000) do
+      {:ok, agent} -> agent.state.last_action_result || %{type: :wait}
+      {:error, _reason} -> %{type: :wait}
+    end
   end
 
-  @impl true
-  def handle_call({:generate_response, action_type, context}, _from, state) do
-    response = do_generate_response(action_type, context, state)
-    {:reply, response, state}
+  def generate_response(session_id, action_type, context) do
+    case send_cmd_signal(session_id, "director.cmd.generate_response", %{action_type: action_type, context: context}, 60_000) do
+      {:ok, agent} -> agent.state.last_response_result || {:error, "No response"}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
-  @impl true
-  def handle_call({:set_phase, phase}, _from, state) do
-    Logger.debug("[Director] Phase set directly to: #{phase}")
-    {:reply, :ok, %{state | current_phase: phase}}
+  def set_phase(session_id, phase) do
+    case send_cmd_signal(session_id, "director.cmd.set_phase", %{phase: phase}) do
+      {:ok, _agent} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
   end
 
-  @impl true
-  def handle_call({:host_message, message}, _from, state) do
-    # Record interviewer's message in conversation history
-    timestamp = DateTime.utc_now()
+  def record_host_message(session_id, message) do
+    case send_cmd_signal(session_id, "director.cmd.host_message", %{content: message}) do
+      {:ok, _agent} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
-    new_history = [
-      %{role: :host, content: message, timestamp: timestamp}
-      | state.conversation_history
+  @doc """
+  Execute a phase transition (replaces InterviewFSM.transition).
+  Returns {:ok, phase} or {:error, reason}.
+  """
+  def transition(session_id, to_phase, reason \\ "requested") do
+    case send_cmd_signal(session_id, "director.cmd.transition", %{to_phase: to_phase, reason: reason}, 10_000) do
+      {:ok, agent} -> agent.state.last_transition_result || {:error, "Transition failed"}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Get the current phase (replaces InterviewFSM.current_phase).
+  """
+  def current_phase(session_id) do
+    state = get_agent_state(session_id)
+    state.current_phase
+  end
+
+  @doc """
+  Check if a transition to the target phase is valid from the current phase.
+  """
+  def can_transition?(session_id, to_phase) do
+    state = get_agent_state(session_id)
+    valid_transition?(state.current_phase, to_phase)
+  end
+
+  def poll_transition_readiness(session_id, target_phase) do
+    case send_cmd_signal(session_id, "director.cmd.poll_transition", %{target_phase: target_phase}, 10_000) do
+      {:ok, agent} -> agent.state.last_votes_result || %{}
+      {:error, _reason} -> %{}
+    end
+  end
+
+  def check_transition_consensus(session_id, target_phase) do
+    case send_cmd_signal(session_id, "director.cmd.check_consensus", %{target_phase: target_phase}, 10_000) do
+      {:ok, agent} -> agent.state.last_consensus_result || {:no_consensus, %{}}
+      {:error, _reason} -> {:no_consensus, %{}}
+    end
+  end
+
+  # ==========================================================================
+  # Shared Helpers (public for Actions to call)
+  # ==========================================================================
+
+  def valid_transition?(from_phase, to_phase) do
+    to_phase in Map.get(@transitions, from_phase, [])
+  end
+
+  def valid_transitions_from(phase) do
+    Map.get(@transitions, phase, [])
+  end
+
+  def gather_transition_votes(session_id, target_phase) do
+    alias InterviewStudio.Agents.{StoryAnalyst, ProbeCoach, EngagementMonitor}
+
+    tasks = [
+      Task.async(fn -> {:story_analyst, safe_vote(StoryAnalyst, session_id, target_phase)} end),
+      Task.async(fn -> {:probe_coach, safe_vote(ProbeCoach, session_id, target_phase)} end),
+      Task.async(fn -> {:engagement_monitor, safe_vote(EngagementMonitor, session_id, target_phase)} end)
     ]
 
-    # Track question to prevent repetition (keep last 20)
-    questions_asked = [message | state.questions_asked] |> Enum.take(20)
+    results = Task.yield_many(tasks, 3_000)
 
-    {:reply, :ok, %{state | conversation_history: new_history, questions_asked: questions_asked}}
-  end
-
-  @impl true
-  def handle_call({:poll_transition, target_phase}, _from, state) do
-    # CONSENSUS MECHANISM: Poll all agents for their votes on phase transition
-    votes = gather_transition_votes(state.session_id, target_phase)
-    Logger.debug("[Director] Polled transition votes for #{target_phase}: #{inspect(votes)}")
-    {:reply, votes, state}
-  end
-
-  @impl true
-  def handle_call({:check_consensus, target_phase}, _from, state) do
-    # CONSENSUS MECHANISM: Check if agents agree on the transition
-    votes = gather_transition_votes(state.session_id, target_phase)
-    result = evaluate_consensus(votes, target_phase, state)
-    Logger.debug("[Director] Consensus check for #{target_phase}: #{elem(result, 0)}")
-    {:reply, result, state}
-  end
-
-  # Merge parallel agent insights into Director's state for decision-making
-  defp merge_insights_into_state(state, insights) when map_size(insights) == 0 do
-    # No insights provided - fall back to sync engagement check
-    current_engagement = get_current_engagement(state.session_id)
-    %{state | engagement_level: current_engagement}
-  end
-
-  defp merge_insights_into_state(state, insights) do
-    # Extract themes from Story Analyst
-    new_themes = Map.get(insights, :themes, [])
-    merged_themes = merge_themes(state.active_themes, new_themes)
-
-    # Extract probes from Probe Coach
-    new_probes = Map.get(insights, :probes, [])
-    merged_probes = merge_probes(state.pending_probes, new_probes)
-
-    # Extract engagement from Engagement Monitor
-    engagement_data = Map.get(insights, :engagement, %{})
-    engagement_level = Map.get(engagement_data, :level, state.engagement_level)
-
-    Logger.debug("[Director] Merged insights - themes: #{length(merged_themes)}, probes: #{length(merged_probes)}, engagement: #{engagement_level}")
-
-    %{state |
-      active_themes: merged_themes,
-      pending_probes: merged_probes,
-      engagement_level: engagement_level,
-      last_insights: insights  # Store for dynamic question generation
-    }
-  end
-
-  defp merge_themes(existing, new) do
-    # Combine and deduplicate themes
-    (new ++ existing)
-    |> Enum.uniq_by(fn t -> t[:theme] || t.theme end)
-    |> Enum.take(10)
-  end
-
-  defp merge_probes(existing, new) do
-    # Convert new probes to expected format and merge
-    formatted_new = Enum.map(new, fn p ->
-      %{
-        topic: p[:topic] || p.topic,
-        question: p[:suggested_question] || p[:question] || p.suggested_question,
-        rationale: p[:rationale] || p.rationale,
-        priority: p[:priority] || p.priority || :medium
-      }
-    end)
-
-    # Combine, sort by priority, and limit
-    (formatted_new ++ existing)
-    |> Enum.uniq_by(fn p -> p.topic end)
-    |> Enum.sort_by(fn p ->
-      case p.priority do
-        :high -> 0
-        :medium -> 1
-        :low -> 2
-        _ -> 1
+    results
+    |> Enum.map(fn {task, result} ->
+      case result do
+        {:ok, {agent, vote}} -> {agent, vote}
+        {:exit, _reason} -> {:unknown, {:abstain, "Agent failed to respond"}}
+        nil ->
+          Task.shutdown(task, :brutal_kill)
+          {:unknown, {:abstain, "Agent timed out"}}
       end
     end)
-    |> Enum.take(5)
+    |> Enum.into(%{})
   end
 
-  @impl true
-  def handle_info({:signal, signal}, state) do
-    new_state = handle_signal(signal, state)
-    {:noreply, new_state}
-  end
+  def evaluate_consensus(votes, target_phase, state) do
+    ready_count = Enum.count(votes, fn {_agent, {vote, _}} -> vote == :ready end)
+    not_ready_count = Enum.count(votes, fn {_agent, {vote, _}} -> vote == :not_ready end)
 
-  # Signal handlers
+    weighted_votes = apply_vote_weights(votes, target_phase, state)
 
-  defp handle_signal(%{type: "interview.phase.entered"} = signal, state) do
-    phase = signal.data.phase_name
-    Logger.debug("[Director] Phase entered: #{phase}")
-    %{state | current_phase: phase}
-  end
-
-  defp handle_signal(%{type: "observer.insight.theme"} = signal, state) do
-    theme = %{
-      theme: signal.data.theme,
-      evidence: signal.data.evidence,
-      confidence: signal.data.confidence
-    }
-    Logger.debug("[Director] Theme received: #{theme.theme}")
-    %{state | active_themes: [theme | state.active_themes] |> Enum.take(10)}
-  end
-
-  defp handle_signal(%{type: "observer.suggestion.probe"} = signal, state) do
-    probe = %{
-      topic: signal.data.topic,
-      question: signal.data.suggested_question,
-      rationale: signal.data.rationale,
-      priority: signal.data.priority
-    }
-    Logger.debug("[Director] Probe suggested: #{probe.topic}")
-
-    # Sort by priority
-    probes = [probe | state.pending_probes]
-    |> Enum.sort_by(fn p ->
-      case p.priority do
-        :high -> 0
-        :medium -> 1
-        :low -> 2
-      end
-    end)
-    |> Enum.take(5)
-
-    %{state | pending_probes: probes}
-  end
-
-  defp handle_signal(%{type: "observer.status.engagement"} = signal, state) do
-    level = signal.data.level
-    Logger.debug("[Director] Engagement status: #{level}")
-    %{state | engagement_level: level}
-  end
-
-  # Handle frustration detection from Sentiment Agent (legacy signal)
-  defp handle_signal(%{type: "observer.status.frustration"} = signal, state) do
-    level = signal.data.level
-    Logger.info("[Director] Frustration detected: #{level}")
-    %{state | frustration_level: level}
-  end
-
-  # Handle semantic sentiment signal from Sentiment Agent (new comprehensive signal)
-  defp handle_signal(%{type: "observer.status.sentiment"} = signal, state) do
-    data = signal.data
-    Logger.info("[Director] Semantic sentiment - intent: #{data.user_intent}, direction: #{data.chronological_direction}, frustration: #{data.frustration_level}")
-    %{state |
-      user_intent: data.user_intent,
-      chronological_direction: data.chronological_direction,
-      frustration_level: data.frustration_level
-    }
-  end
-
-  # Handle timer signals
-  defp handle_signal(%{type: "observer.status.timer"} = signal, state) do
-    elapsed_minutes = signal.data.elapsed_minutes
-    Logger.debug("[Director] Timer update: #{elapsed_minutes} minutes elapsed")
-    # Timer info can influence pacing decisions
-    state
-  end
-
-  defp handle_signal(_signal, state), do: state
-
-  # Get engagement level directly from Engagement Monitor (sync call)
-  defp get_current_engagement(session_id) do
-    alias InterviewStudio.Agents.EngagementMonitor
-    try do
-      EngagementMonitor.get_level(session_id)
-    rescue
-      _ -> :medium  # Default if monitor not available
-    catch
-      :exit, _ -> :medium
-    end
-  end
-
-  # Decision logic
-
-  defp decide_next_action(state) do
     cond do
-      # User explicitly wants to END the interview (semantic detection)
-      # "Let's wrap up", "I'm done", etc. - NOT "let's move on"
-      state.user_intent == :end_interview ->
-        if state.current_phase in [:synthesis, :closing] do
-          %{
-            type: :transition,
-            to_phase: :closing,
-            reason: "User requested to end interview",
-            consensus_override: :user_request
-          }
-        else
-          %{
-            type: :transition,
-            to_phase: :synthesis,
-            reason: "User requested to end interview",
-            consensus_override: :user_request
-          }
-        end
-
-      # User wants to CHANGE TOPIC - NOT end the interview!
-      # "Let's move on", "Can we talk about something else", etc.
-      state.user_intent == :change_topic ->
-        handle_topic_change_request(state)
-
-      # Critical engagement - wrap up (engagement monitor has high weight)
-      state.engagement_level == :critical ->
-        %{
-          type: :transition,
-          to_phase: :closing,
-          reason: "Engagement dropped to critical level",
-          consensus_override: :critical_engagement
-        }
-
-      # High frustration - move toward synthesis/closing
-      state.frustration_level == :high and state.current_phase not in [:synthesis, :closing] ->
-        %{
-          type: :transition,
-          to_phase: :synthesis,
-          reason: "User frustration detected - moving to synthesis",
-          consensus_override: :frustration_detected
-        }
-
-      # In preparation - auto-advance to opening (no consensus needed)
-      state.current_phase == :preparation ->
-        %{
-          type: :transition,
-          to_phase: :opening,
-          reason: "Preparation complete"
-        }
-
-      # In opening - greet the user, then move to core questions
-      state.current_phase == :opening ->
-        # If user has responded with actual content, transition to core questions
-        user_messages = Enum.filter(state.conversation_history, fn m ->
-          m.role == :user and m.content != "" and m.content != nil
-        end)
-        if length(user_messages) >= 1 do
-          # CONSENSUS: Check if agents agree to move to core questions
-          maybe_transition_with_consensus(state, :core_questions, "Opening complete, user engaged")
-        else
-          question = get_opening_question()
-          %{
-            type: :ask,
-            question: question,
-            source: :question_bank
-          }
-        end
-
-      # In core questions - either probe or ask next question
-      state.current_phase == :core_questions ->
-        decide_core_questions_action(state)
-
-      # In probing - ask probe questions
-      state.current_phase == :probing ->
-        decide_probing_action(state)
-
-      # In synthesis - summarize themes, then transition to closing
-      state.current_phase == :synthesis ->
-        cond do
-          # User has responded to synthesis - move to closing
-          state.synthesis_delivered and state.user_responded_to_synthesis ->
-            # CONSENSUS: Check before moving to closing
-            maybe_transition_with_consensus(state, :closing, "Synthesis complete, user confirmed")
-
-          # Synthesis already delivered - user response triggers closing
-          state.synthesis_delivered and state.last_user_message != nil ->
-            maybe_transition_with_consensus(state, :closing, "Synthesis delivered, moving to closing")
-
-          # First time - deliver synthesis
-          true ->
-            %{
-              type: :synthesize,
-              themes: state.active_themes
-            }
-        end
-
-      # In closing - thank and wrap up
-      state.current_phase == :closing ->
-        %{
-          type: :close,
-          themes: state.active_themes
-        }
-
-      true ->
-        %{type: :wait}
+      ready_count >= 2 -> {:consensus, votes}
+      ready_count > not_ready_count -> {:consensus, votes}
+      weighted_votes.weighted_ready > weighted_votes.threshold -> {:consensus, votes}
+      true -> {:no_consensus, votes}
     end
   end
 
-  # CONSENSUS MECHANISM: Attempt transition with agent consensus
-  # If no consensus, Director makes final call but logs the disagreement
-  defp maybe_transition_with_consensus(state, target_phase, default_reason) do
-    votes = gather_transition_votes(state.session_id, target_phase)
-    {consensus_result, _votes} = evaluate_consensus(votes, target_phase, state)
-
-    case consensus_result do
-      :consensus ->
-        Logger.info("[Director] CONSENSUS reached for transition to #{target_phase}")
-        %{
-          type: :transition,
-          to_phase: target_phase,
-          reason: default_reason,
-          consensus: :reached,
-          votes: votes
-        }
-
-      :no_consensus ->
-        # Director makes final call but records the disagreement
-        Logger.warning("[Director] NO CONSENSUS for #{target_phase} - Director overriding. Votes: #{inspect(votes)}")
-
-        # Emit disagreement signal for debug visibility
-        emit_disagreement_signal(target_phase, votes, state)
-
-        %{
-          type: :transition,
-          to_phase: target_phase,
-          reason: "#{default_reason} (Director override - no consensus)",
-          consensus: :director_override,
-          votes: votes
-        }
-    end
+  def emit_phase_entered_signal(phase) do
+    signal = %Jido.Signal{
+      type: "interview.phase.entered",
+      source: "director",
+      id: Jido.Util.generate_id(),
+      data: %{
+        phase_name: phase,
+        timestamp: DateTime.utc_now(),
+        context: %{}
+      }
+    }
+    InterviewBus.publish(signal)
   end
 
-  defp emit_disagreement_signal(target_phase, votes, _state) do
+  def emit_phase_completed_signal(phase, summary) do
+    next_phase = case Map.get(@transitions, phase, []) do
+      [first | _] -> first
+      [] -> nil
+    end
+
+    signal = %Jido.Signal{
+      type: "interview.phase.completed",
+      source: "director",
+      id: Jido.Util.generate_id(),
+      data: %{
+        phase_name: phase,
+        summary: summary,
+        next_phase: next_phase,
+        timestamp: DateTime.utc_now()
+      }
+    }
+    InterviewBus.publish(signal)
+  end
+
+  def emit_disagreement_signal(target_phase, votes) do
     signal = %Jido.Signal{
       type: "director.consensus.disagreement",
       source: "director",
@@ -611,309 +345,76 @@ defmodule InterviewStudio.Agents.Director do
     InterviewBus.publish(signal)
   end
 
-  defp format_votes_for_signal(votes) do
-    votes
-    |> Enum.map(fn {agent, {vote, rationale}} ->
-      %{agent: agent, vote: vote, rationale: rationale}
+  def get_current_engagement(session_id) do
+    alias InterviewStudio.Agents.EngagementMonitor
+    try do
+      EngagementMonitor.get_level(session_id)
+    rescue
+      _ -> :medium
+    catch
+      :exit, _ -> :medium
+    end
+  end
+
+  def deep_merge_config(base, override) when is_map(base) and is_map(override) do
+    Map.merge(base, override, fn
+      _k, base_val, override_val when is_map(base_val) and is_map(override_val) ->
+        deep_merge_config(base_val, override_val)
+      _k, _base_val, override_val ->
+        override_val
     end)
   end
+  def deep_merge_config(_base, override), do: override
 
-  # Handle user's request to change topics (NOT end interview)
-  # This is the key fix: "let's move on" should pivot to a new topic, not terminate
-  defp handle_topic_change_request(state) do
-    if state.topics_to_explore != [] do
-      # Select next topic, respecting chronological momentum
-      next_topic = select_topic_respecting_momentum(state)
-      Logger.info("[Director] Topic change requested - pivoting to: #{next_topic}")
-      %{
-        type: :ask_dynamic,
-        topic: next_topic,
-        themes: state.active_themes,
-        probes: [],  # Clear pending probes when user wants to change topic
-        engagement: state.engagement_level,
-        source: :topic_change_request,
-        reason: "User requested topic change"
-      }
-    else
-      # No more topics - transition to synthesis
-      Logger.info("[Director] Topic change requested but topics exhausted - moving to synthesis")
-      %{
-        type: :transition,
-        to_phase: :synthesis,
-        reason: "User requested topic change, but all topics explored"
-      }
-    end
-  end
-
-  # Select next topic respecting chronological direction preference
-  defp select_topic_respecting_momentum(state) do
-    remaining = state.topics_to_explore
-
-    case state.chronological_direction do
-      :forward ->
-        # Prefer forward-looking topics from config (vision, passion, differentiation)
-        forward_topics = state.config[:forward_topics] || [:vision, :passion, :differentiation]
-        selected = Enum.find(forward_topics, fn t -> t in remaining end) || hd(remaining)
-        Logger.info("[Director] MOMENTUM: User moved FORWARD in time -> selecting forward topic: #{selected} (from #{inspect(forward_topics)})")
-        selected
-
-      :backward ->
-        # User is talking about the past - let them, but don't encourage regression
-        # Still prioritize forward topics unless they explicitly want origin
-        selected = hd(remaining)
-        Logger.debug("[Director] MOMENTUM: User in backward mode -> using default: #{selected}")
-        selected
-
-      :neutral ->
-        # No preference - use standard topic selection
-        Logger.debug("[Director] MOMENTUM: Neutral -> using standard selection")
-        select_next_topic(state)
-
-      _ ->
-        # No direction set yet - use standard selection
-        select_next_topic(state)
-    end
-  end
-
-  defp decide_core_questions_action(state) do
-    # PRIORITY: Cover all 5 topics FIRST, then probe
-    # This prevents getting stuck on one topic with endless follow-ups
-    cond do
-      # More topics to explore - ALWAYS prioritize topic rotation
-      state.topics_to_explore != [] ->
-        # Pick next topic, RESPECTING USER'S TEMPORAL MOMENTUM
-        # If user moved forward in time (origin -> college -> career), don't pull them back
-        next_topic = select_topic_respecting_momentum(state)
-
-        Logger.debug("[Director] Topic rotation: moving to #{next_topic}, remaining: #{inspect(state.topics_to_explore)}")
-
-        %{
-          type: :ask_dynamic,
-          topic: next_topic,
-          themes: state.active_themes,
-          probes: state.pending_probes,
-          engagement: state.engagement_level,
-          source: :collective_intelligence
-        }
-
-      # All topics covered - now we can probe if there are pending probes
-      state.pending_probes != [] ->
-        # Only probe AFTER all core topics are covered
-        high_probe = Enum.find(state.pending_probes, fn p -> p.priority == :high end)
-        probe = high_probe || hd(state.pending_probes)
-
-        Logger.debug("[Director] All topics covered, now probing: #{probe.topic}")
-
-        %{
-          type: :probe,
-          question: probe.question,
-          topic: probe.topic,
-          source: :probe_coach
-        }
-
-      # All topics covered and no probes - transition to synthesis
-      true ->
-        maybe_transition_with_consensus(state, :synthesis, "Core topics explored")
-    end
-  end
-
-  # Select the next topic to explore based on collective intelligence
-  defp select_next_topic(state) do
-    remaining = state.topics_to_explore
-
-    # If we have themes that relate to a remaining topic, prioritize that
-    # PHASE 4: Pass state for config-driven keywords
-    theme_suggested_topic = find_theme_related_topic(state.active_themes, remaining, state)
-
-    # If we have probes that relate to a topic, consider that
-    probe_suggested_topic = find_probe_related_topic(state.pending_probes, remaining, state)
-
-    cond do
-      # Theme suggests a topic - explore that thread
-      theme_suggested_topic != nil ->
-        Logger.debug("[Director] Theme-guided topic selection: #{theme_suggested_topic}")
-        theme_suggested_topic
-
-      # Probe suggests a topic - follow that lead
-      probe_suggested_topic != nil ->
-        Logger.debug("[Director] Probe-guided topic selection: #{probe_suggested_topic}")
-        probe_suggested_topic
-
-      # Default: follow natural interview flow
-      true ->
-        hd(remaining)
-    end
-  end
-
-  defp find_theme_related_topic(themes, remaining_topics, state) do
-    # PHASE 4: Get topic keywords from config
-    topic_keywords = state.config[:topic_keywords] || default_topic_keywords()
-
-    Enum.find(remaining_topics, fn topic ->
-      keywords = Map.get(topic_keywords, topic, [])
-      Enum.any?(themes, fn theme ->
-        theme_text = (theme[:theme] || theme.theme || "") |> String.downcase()
-        Enum.any?(keywords, fn kw -> String.contains?(theme_text, kw) end)
-      end)
-    end)
-  end
-
-  # Default topic keywords (used when config not available)
-  defp default_topic_keywords do
+  def default_llm_config do
     %{
-      origin: ["background", "start", "began", "journey", "path", "career", "how you got here", "first job", "started out"],
-      passion: ["love", "passion", "drive", "motivate", "care about", "excited", "energy", "fulfilling"],
-      differentiation: ["unique", "different", "approach", "perspective", "style", "stand out", "special"],
-      moments: ["moment", "turning point", "pivotal", "changed", "realized", "breakthrough", "milestone"],
-      vision: ["future", "goal", "vision", "next", "working toward", "dream", "aspiration", "building"]
+      provider: :openrouter,
+      model: "meta-llama/llama-4-scout-17b-16e-instruct",
+      temperature: 0.7
     }
   end
 
-  defp find_probe_related_topic(probes, remaining_topics, state) do
-    # PHASE 4: Get probe topic keywords from config
-    topic_keywords = state.config[:probe_topic_keywords] || default_probe_topic_keywords()
+  # ==========================================================================
+  # Private Helpers
+  # ==========================================================================
 
-    Enum.find(remaining_topics, fn topic ->
-      keywords = Map.get(topic_keywords, topic, [])
-      Enum.any?(probes, fn probe ->
-        probe_text = (probe[:topic] || probe.topic || "") |> String.downcase()
-        Enum.any?(keywords, fn kw -> String.contains?(probe_text, kw) end)
-      end)
-    end)
+  defp get_agent_state(session_id) do
+    {:ok, server_state} = Jido.AgentServer.state(via_tuple(session_id))
+    server_state.agent.state
   end
 
-  # Default probe topic keywords
-  defp default_probe_topic_keywords do
-    %{
-      origin: ["background", "start", "how", "where"],
-      passion: ["why", "love", "passion", "drive"],
-      differentiation: ["unique", "different", "approach"],
-      moments: ["when", "moment", "turning", "pivotal"],
-      vision: ["future", "goal", "next", "plan"]
-    }
+  defp via_tuple(session_id) do
+    {:via, Registry, {InterviewStudio.SessionRegistry, {:director, session_id}}}
   end
 
-  defp decide_probing_action(state) do
-    cond do
-      # More probes to ask
-      state.pending_probes != [] ->
-        [probe | _rest] = state.pending_probes
-        %{
-          type: :probe,
-          question: probe.question,
-          topic: probe.topic
-        }
-
-      # Done probing - CONSENSUS: Check with agents before synthesis
-      true ->
-        maybe_transition_with_consensus(state, :synthesis, "Probing complete")
-    end
-  end
-
-  defp get_opening_question do
-    case Phases.questions(:opening) do
-      [first | _] -> first.text
-      [] -> "Hi! I'm excited to learn more about you and your story. Ready to dive in?"
-    end
-  end
-
-  # State updates based on actions
-
-  defp apply_action_to_state(%{type: :ask_dynamic, topic: topic} = _action, state) do
-    # Dynamic question - mark topic as explored
-    explored = [topic | state.topics_explored]
-    remaining = Enum.reject(state.topics_to_explore, fn t -> t == topic end)
-    Logger.debug("[Director] Topic explored: #{topic}, remaining: #{inspect(remaining)}")
-    %{state | topics_explored: explored, topics_to_explore: remaining}
-  end
-
-  defp apply_action_to_state(%{type: :ask}, state) do
-    # Opening question or scripted question - just track it
-    state
-  end
-
-  defp apply_action_to_state(%{type: :probe, topic: topic}, state) do
-    # Remove the used probe from pending
-    remaining_probes = Enum.reject(state.pending_probes, fn p -> p.topic == topic end)
-    %{state | pending_probes: remaining_probes}
-  end
-
-  defp apply_action_to_state(%{type: :synthesize}, state) do
-    # Mark that synthesis has been delivered
-    %{state | synthesis_delivered: true}
-  end
-
-  defp apply_action_to_state(_action, state) do
-    # For transitions, waits, etc. - no state change needed
-    state
-  end
-
-  # Signal publishing
-
-  defp publish_user_utterance(content, phase) do
+  defp send_cmd_signal(session_id, type, data, timeout \\ 10_000) do
     signal = %Jido.Signal{
-      type: "interview.utterance.user",
-      source: "director",
+      type: type,
+      source: "session",
       id: Jido.Util.generate_id(),
-      data: %{
-        content: content,
-        timestamp: DateTime.utc_now(),
-        phase_context: phase
-      }
+      data: data,
+      time: DateTime.utc_now()
     }
-    InterviewBus.publish(signal)
+    GenServer.call(via_tuple(session_id), {:signal, signal}, timeout)
   end
 
-  # PHASE 4: Subscribe to signals based on domain config or use defaults
-  defp subscribe_to_signals(nil) do
-    # No domain - use default subscriptions
-    InterviewBus.subscribe("interview.utterance.user")
-    InterviewBus.subscribe("interview.phase.**")
-    InterviewBus.subscribe("observer.insight.**")
-    InterviewBus.subscribe("observer.suggestion.**")
-    InterviewBus.subscribe("observer.status.**")
+  defp subscribe_to_signals(nil, pid) do
+    InterviewBus.subscribe_pid("interview.phase.**", pid)
+    InterviewBus.subscribe_pid("observer.insight.**", pid)
+    InterviewBus.subscribe_pid("observer.suggestion.**", pid)
+    InterviewBus.subscribe_pid("observer.status.**", pid)
   end
 
-  defp subscribe_to_signals(domain) do
-    # Get subscriptions from domain config
+  defp subscribe_to_signals(domain, pid) do
     subscriptions = DomainLoader.get_subscriptions(domain, :director)
 
     if subscriptions == [] do
-      # Fallback to defaults if no config
-      subscribe_to_signals(nil)
+      subscribe_to_signals(nil, pid)
     else
       Enum.each(subscriptions, fn pattern ->
-        InterviewBus.subscribe(pattern)
+        InterviewBus.subscribe_pid(pattern, pid)
       end)
     end
-  end
-
-  # CONSENSUS MECHANISM: Gather votes from all observer agents
-  defp gather_transition_votes(session_id, target_phase) do
-    alias InterviewStudio.Agents.{StoryAnalyst, ProbeCoach, EngagementMonitor}
-
-    # Poll each agent in parallel with timeout handling
-    tasks = [
-      Task.async(fn -> {:story_analyst, safe_vote(StoryAnalyst, session_id, target_phase)} end),
-      Task.async(fn -> {:probe_coach, safe_vote(ProbeCoach, session_id, target_phase)} end),
-      Task.async(fn -> {:engagement_monitor, safe_vote(EngagementMonitor, session_id, target_phase)} end)
-    ]
-
-    # Wait for all votes with timeout
-    results = Task.yield_many(tasks, 3_000)
-
-    # Process results, using abstain for timeouts/failures
-    results
-    |> Enum.map(fn {task, result} ->
-      case result do
-        {:ok, {agent, vote}} -> {agent, vote}
-        {:exit, _reason} -> {:unknown, {:abstain, "Agent failed to respond"}}
-        nil ->
-          Task.shutdown(task, :brutal_kill)
-          {:unknown, {:abstain, "Agent timed out"}}
-      end
-    end)
-    |> Enum.into(%{})
   end
 
   defp safe_vote(agent_module, session_id, target_phase) do
@@ -926,41 +427,9 @@ defmodule InterviewStudio.Agents.Director do
     end
   end
 
-  # CONSENSUS MECHANISM: Evaluate votes to determine if transition should proceed
-  # Default threshold: 2/3 agents must be ready (or abstain counts as not blocking)
-  # PHASE 4: Now accepts state for config-driven weights
-  defp evaluate_consensus(votes, target_phase, state) do
-    ready_count = Enum.count(votes, fn {_agent, {vote, _}} -> vote == :ready end)
-    not_ready_count = Enum.count(votes, fn {_agent, {vote, _}} -> vote == :not_ready end)
-    _total_voting = Enum.count(votes, fn {_agent, {vote, _}} -> vote != :abstain end)
-
-    # Apply weighted voting for certain decisions (PHASE 4: from config)
-    weighted_votes = apply_vote_weights(votes, target_phase, state)
-
-    cond do
-      # Strong consensus: majority of voters say ready
-      ready_count >= 2 ->
-        {:consensus, votes}
-
-      # No objections: ready voters outnumber not_ready
-      ready_count > not_ready_count ->
-        {:consensus, votes}
-
-      # Weighted override for critical decisions
-      weighted_votes.weighted_ready > weighted_votes.threshold ->
-        {:consensus, votes}
-
-      # No consensus
-      true ->
-        {:no_consensus, votes}
-    end
-  end
-
-  # PHASE 4: Apply agent-specific weights from domain consensus config
   defp apply_vote_weights(votes, target_phase, state) do
-    # Get consensus config from domain
-    consensus_config = if state.domain do
-      DomainLoader.get_consensus_weights(state.domain, target_phase)
+    consensus_config = if state[:domain] do
+      DomainLoader.get_consensus_weights(state[:domain], target_phase)
     else
       %{weights: default_consensus_weights(target_phase), threshold: 0.6}
     end
@@ -968,7 +437,6 @@ defmodule InterviewStudio.Agents.Director do
     weights = consensus_config[:weights] || default_consensus_weights(target_phase)
     threshold_pct = consensus_config[:threshold] || 0.6
 
-    # Calculate weighted score
     weighted_ready = votes
     |> Enum.reduce(0.0, fn {agent, {vote, _}}, acc ->
       weight = Map.get(weights, agent, 1.0)
@@ -984,7 +452,6 @@ defmodule InterviewStudio.Agents.Director do
     %{weighted_ready: weighted_ready, threshold: threshold, weights: weights}
   end
 
-  # Default consensus weights when config not available
   defp default_consensus_weights(:closing) do
     %{story_analyst: 1.0, probe_coach: 1.0, engagement_monitor: 2.0}
   end
@@ -998,39 +465,808 @@ defmodule InterviewStudio.Agents.Director do
     %{story_analyst: 1.0, probe_coach: 1.0, engagement_monitor: 1.0}
   end
 
-  # LLM Response Generation
+  defp format_votes_for_signal(votes) do
+    votes
+    |> Enum.map(fn {agent, {vote, rationale}} ->
+      %{agent: agent, vote: vote, rationale: rationale}
+    end)
+  end
+end
+
+# =============================================================================
+# ASYNC SIGNAL HANDLERS
+# =============================================================================
+
+defmodule InterviewStudio.Agents.Director.Actions.HandlePhaseEntered do
+  @moduledoc "Updates Director state when a phase.entered signal arrives."
+
+  use Jido.Action,
+    name: "director_handle_phase_entered",
+    description: "Update current phase from phase entered signal",
+    schema: [
+      phase_name: [type: :any, default: nil],
+      phase: [type: :any, default: nil],
+      to_phase: [type: :any, default: nil],
+      timestamp: [type: :any, default: nil],
+      context: [type: :any, default: nil]
+    ]
+
+  @impl true
+  def run(params, context) do
+    phase = params[:phase_name] || params[:phase] || params[:to_phase]
+
+    if phase && phase != context.state.current_phase do
+      {:ok, %{current_phase: phase, phase_started_at: DateTime.utc_now()}}
+    else
+      {:ok, %{}}
+    end
+  end
+end
+
+defmodule InterviewStudio.Agents.Director.Actions.HandleInsightTheme do
+  @moduledoc "Merges a discovered theme into active_themes."
+
+  use Jido.Action,
+    name: "director_handle_insight_theme",
+    description: "Add discovered theme to active themes",
+    schema: [
+      theme: [type: :any, default: nil],
+      evidence: [type: :any, default: nil],
+      confidence: [type: :any, default: nil]
+    ]
+
+  require Logger
+
+  @impl true
+  def run(params, context) do
+    theme = %{
+      theme: params[:theme],
+      evidence: params[:evidence],
+      confidence: params[:confidence]
+    }
+    Logger.debug("[Director] Theme received: #{params[:theme]}")
+
+    updated = [theme | context.state.active_themes || []] |> Enum.take(10)
+    {:ok, %{active_themes: updated}}
+  end
+end
+
+defmodule InterviewStudio.Agents.Director.Actions.HandleSuggestionProbe do
+  @moduledoc "Adds a suggested probe to pending_probes."
+
+  use Jido.Action,
+    name: "director_handle_suggestion_probe",
+    description: "Add suggested probe to pending probes",
+    schema: [
+      topic: [type: :any, default: nil],
+      suggested_question: [type: :any, default: nil],
+      rationale: [type: :any, default: nil],
+      priority: [type: :any, default: nil]
+    ]
+
+  require Logger
+
+  @impl true
+  def run(params, context) do
+    probe = %{
+      topic: params[:topic],
+      question: params[:suggested_question],
+      rationale: params[:rationale],
+      priority: params[:priority] || :medium
+    }
+    Logger.debug("[Director] Probe suggested: #{probe.topic}")
+
+    probes = [probe | context.state.pending_probes || []]
+    |> Enum.sort_by(fn p ->
+      case p.priority do
+        :high -> 0
+        :medium -> 1
+        :low -> 2
+        _ -> 1
+      end
+    end)
+    |> Enum.take(5)
+
+    {:ok, %{pending_probes: probes}}
+  end
+end
+
+defmodule InterviewStudio.Agents.Director.Actions.HandleEngagementStatus do
+  @moduledoc "Updates engagement level from engagement monitor signal."
+
+  use Jido.Action,
+    name: "director_handle_engagement_status",
+    description: "Update engagement level",
+    schema: [
+      level: [type: :any, default: nil]
+    ]
+
+  require Logger
+
+  @impl true
+  def run(params, _context) do
+    level = params[:level]
+    Logger.debug("[Director] Engagement status: #{level}")
+    {:ok, %{engagement_level: level}}
+  end
+end
+
+defmodule InterviewStudio.Agents.Director.Actions.HandleFrustrationStatus do
+  @moduledoc "Updates frustration level from sentiment agent signal."
+
+  use Jido.Action,
+    name: "director_handle_frustration_status",
+    description: "Update frustration level",
+    schema: [
+      level: [type: :any, default: nil]
+    ]
+
+  require Logger
+
+  @impl true
+  def run(params, _context) do
+    level = params[:level] || :none
+    Logger.info("[Director] Frustration detected: #{level}")
+    {:ok, %{frustration_level: level}}
+  end
+end
+
+defmodule InterviewStudio.Agents.Director.Actions.HandleSentimentStatus do
+  @moduledoc "Updates semantic sentiment data (intent, chronological direction, frustration)."
+
+  use Jido.Action,
+    name: "director_handle_sentiment_status",
+    description: "Update sentiment data",
+    schema: [
+      user_intent: [type: :any, default: nil],
+      chronological_direction: [type: :any, default: nil],
+      frustration_level: [type: :any, default: nil]
+    ]
+
+  require Logger
+
+  @impl true
+  def run(params, _context) do
+    Logger.info("[Director] Semantic sentiment - intent: #{params[:user_intent]}, direction: #{params[:chronological_direction]}, frustration: #{params[:frustration_level]}")
+    {:ok, %{
+      user_intent: params[:user_intent],
+      chronological_direction: params[:chronological_direction],
+      frustration_level: params[:frustration_level]
+    }}
+  end
+end
+
+defmodule InterviewStudio.Agents.Director.Actions.HandleTimerStatus do
+  @moduledoc "Handles timer milestone signals (informational, no state change)."
+
+  use Jido.Action,
+    name: "director_handle_timer_status",
+    description: "Log timer update",
+    schema: [
+      elapsed_minutes: [type: :any, default: nil],
+      milestone: [type: :any, default: nil],
+      recommendation: [type: :any, default: nil]
+    ]
+
+  require Logger
+
+  @impl true
+  def run(params, _context) do
+    Logger.debug("[Director] Timer update: #{params[:elapsed_minutes]} minutes elapsed")
+    {:ok, %{}}
+  end
+end
+
+# =============================================================================
+# SYNC COMMAND ACTIONS
+# =============================================================================
+
+defmodule InterviewStudio.Agents.Director.Actions.ProcessUserMessage do
+  @moduledoc "Records a user message and publishes the user utterance signal."
+
+  use Jido.Action,
+    name: "director_process_user_message",
+    description: "Record user message and publish utterance signal",
+    schema: [
+      content: [type: :any, default: nil]
+    ]
+
+  require Logger
+
+  alias InterviewStudio.InterviewBus
+
+  @impl true
+  def run(params, context) do
+    state = context.state
+    content = params[:content] || ""
+
+    if content == "" or content == nil do
+      {:ok, %{}}
+    else
+      Logger.debug("[Director] Processing user message: #{String.slice(content, 0, 50)}...")
+
+      timestamp = DateTime.utc_now()
+      entry = %{role: :user, content: content, timestamp: timestamp}
+
+      new_history = [entry | state.conversation_history || []]
+
+      # Publish user utterance signal
+      publish_user_utterance(content, state.current_phase)
+
+      changes = %{
+        conversation_history: new_history,
+        last_user_message: content
+      }
+
+      # Track if user responded after synthesis was delivered
+      changes = if state.current_phase == :synthesis and state.synthesis_delivered do
+        Map.put(changes, :user_responded_to_synthesis, true)
+      else
+        changes
+      end
+
+      {:ok, changes}
+    end
+  end
+
+  defp publish_user_utterance(content, phase) do
+    signal = %Jido.Signal{
+      type: "interview.utterance.user",
+      source: "director",
+      id: Jido.Util.generate_id(),
+      data: %{
+        content: content,
+        timestamp: DateTime.utc_now(),
+        phase_context: phase
+      }
+    }
+    InterviewBus.publish(signal)
+  end
+end
+
+defmodule InterviewStudio.Agents.Director.Actions.SetPhase do
+  @moduledoc "Directly sets the current phase."
+
+  use Jido.Action,
+    name: "director_set_phase",
+    description: "Set the current interview phase",
+    schema: [
+      phase: [type: :any, default: nil]
+    ]
+
+  require Logger
+
+  @impl true
+  def run(params, _context) do
+    phase = params[:phase]
+    Logger.debug("[Director] Phase set directly to: #{phase}")
+    {:ok, %{current_phase: phase}}
+  end
+end
+
+defmodule InterviewStudio.Agents.Director.Actions.RecordHostMessage do
+  @moduledoc "Records a host message in conversation history."
+
+  use Jido.Action,
+    name: "director_record_host_message",
+    description: "Record host message to conversation history",
+    schema: [
+      content: [type: :any, default: nil]
+    ]
+
+  @impl true
+  def run(params, context) do
+    state = context.state
+    content = params[:content] || ""
+    timestamp = DateTime.utc_now()
+
+    entry = %{role: :host, content: content, timestamp: timestamp}
+    new_history = [entry | state.conversation_history || []]
+
+    # Track question to prevent repetition (keep last 20)
+    questions_asked = [content | state.questions_asked || []] |> Enum.take(20)
+
+    {:ok, %{conversation_history: new_history, questions_asked: questions_asked}}
+  end
+end
+
+defmodule InterviewStudio.Agents.Director.Actions.TransitionPhase do
+  @moduledoc "Validates and executes a phase transition (replaces InterviewFSM)."
+
+  use Jido.Action,
+    name: "director_transition_phase",
+    description: "Validate and execute phase transition",
+    schema: [
+      to_phase: [type: :any, default: nil],
+      reason: [type: :any, default: "requested"]
+    ]
+
+  require Logger
+
+  alias InterviewStudio.Agents.Director
+
+  @impl true
+  def run(params, context) do
+    state = context.state
+    to_phase = params[:to_phase]
+    reason = params[:reason] || "requested"
+
+    cond do
+      # Idempotent: already in this phase
+      state.current_phase == to_phase ->
+        Logger.debug("[Director] Already in #{to_phase}, ignoring transition request")
+        {:ok, %{last_transition_result: {:ok, to_phase}}}
+
+      # Valid transition
+      Director.valid_transition?(state.current_phase, to_phase) ->
+        Logger.info("[Director] Transitioning from #{state.current_phase} to #{to_phase}: #{reason}")
+
+        history_entry = %{
+          phase: state.current_phase,
+          started_at: state.phase_started_at,
+          completed_at: DateTime.utc_now(),
+          summary: reason
+        }
+
+        # Emit phase signals
+        Director.emit_phase_completed_signal(state.current_phase, reason)
+        Director.emit_phase_entered_signal(to_phase)
+
+        {:ok, %{
+          current_phase: to_phase,
+          phase_started_at: DateTime.utc_now(),
+          phase_history: [history_entry | state.phase_history || []],
+          last_transition_result: {:ok, to_phase}
+        }}
+
+      # Invalid transition
+      true ->
+        reason_msg = "Invalid transition from #{state.current_phase} to #{to_phase}"
+        Logger.warning("[Director] Transition denied: #{reason_msg}")
+        {:ok, %{last_transition_result: {:error, reason_msg}}}
+    end
+  end
+end
+
+defmodule InterviewStudio.Agents.Director.Actions.PollTransition do
+  @moduledoc "Gathers transition votes from all observer agents."
+
+  use Jido.Action,
+    name: "director_poll_transition",
+    description: "Poll agents for transition readiness votes",
+    schema: [
+      target_phase: [type: :any, default: nil]
+    ]
+
+  require Logger
+
+  alias InterviewStudio.Agents.Director
+
+  @impl true
+  def run(params, context) do
+    state = context.state
+    target_phase = params[:target_phase]
+    votes = Director.gather_transition_votes(state.session_id, target_phase)
+    Logger.debug("[Director] Polled transition votes for #{target_phase}: #{inspect(votes)}")
+    {:ok, %{last_votes_result: votes}}
+  end
+end
+
+defmodule InterviewStudio.Agents.Director.Actions.CheckConsensus do
+  @moduledoc "Gathers votes and evaluates consensus for a phase transition."
+
+  use Jido.Action,
+    name: "director_check_consensus",
+    description: "Check consensus for phase transition",
+    schema: [
+      target_phase: [type: :any, default: nil]
+    ]
+
+  require Logger
+
+  alias InterviewStudio.Agents.Director
+
+  @impl true
+  def run(params, context) do
+    state = context.state
+    target_phase = params[:target_phase]
+    votes = Director.gather_transition_votes(state.session_id, target_phase)
+    result = Director.evaluate_consensus(votes, target_phase, state)
+    Logger.debug("[Director] Consensus check for #{target_phase}: #{elem(result, 0)}")
+    {:ok, %{last_consensus_result: result}}
+  end
+end
+
+# =============================================================================
+# DecideNextAction — the core decision engine
+# =============================================================================
+
+defmodule InterviewStudio.Agents.Director.Actions.DecideNextAction do
+  @moduledoc """
+  Merges parallel agent insights and decides the Director's next action.
+  This is the heart of the multi-agent collaboration system.
+  """
+
+  use Jido.Action,
+    name: "director_decide_next_action",
+    description: "Merge insights from observers and decide next action",
+    schema: [
+      insights: [type: :any, default: %{}]
+    ]
+
+  require Logger
+
+  alias InterviewStudio.Agents.Director
+  alias InterviewStudio.Pipeline.Phases
+
+  @impl true
+  def run(params, context) do
+    state = context.state
+    insights = params[:insights] || %{}
+
+    # Merge insights — compute state changes
+    insight_changes = compute_insight_changes(state, insights)
+
+    # Build working state for decision-making
+    working_state = Map.merge(state, insight_changes)
+
+    # Decide next action
+    action = decide_next_action(working_state)
+
+    # Compute action-related state changes
+    action_changes = compute_action_changes(action, working_state)
+
+    Logger.debug("[Director] Synthesized action from insights: #{inspect(action[:type])}")
+
+    # Combine all changes + store action result
+    all_changes = insight_changes
+    |> Map.merge(action_changes)
+    |> Map.put(:last_action_result, action)
+
+    {:ok, all_changes}
+  end
+
+  # ---- Insight merging ----
+
+  defp compute_insight_changes(state, insights) when map_size(insights) == 0 do
+    current_engagement = Director.get_current_engagement(state.session_id)
+    %{engagement_level: current_engagement}
+  end
+
+  defp compute_insight_changes(state, insights) do
+    new_themes = Map.get(insights, :themes, [])
+    merged_themes = merge_themes(state.active_themes || [], new_themes)
+
+    new_probes = Map.get(insights, :probes, [])
+    merged_probes = merge_probes(state.pending_probes || [], new_probes)
+
+    engagement_data = Map.get(insights, :engagement, %{})
+    engagement_level = Map.get(engagement_data, :level, state.engagement_level)
+
+    Logger.debug("[Director] Merged insights - themes: #{length(merged_themes)}, probes: #{length(merged_probes)}, engagement: #{engagement_level}")
+
+    %{
+      active_themes: merged_themes,
+      pending_probes: merged_probes,
+      engagement_level: engagement_level,
+      last_insights: insights
+    }
+  end
+
+  defp merge_themes(existing, new) do
+    (new ++ existing)
+    |> Enum.uniq_by(fn t -> t[:theme] || t.theme end)
+    |> Enum.take(10)
+  end
+
+  defp merge_probes(existing, new) do
+    formatted_new = Enum.map(new, fn p ->
+      %{
+        topic: p[:topic] || p.topic,
+        question: p[:suggested_question] || p[:question] || p.suggested_question,
+        rationale: p[:rationale] || p.rationale,
+        priority: p[:priority] || p.priority || :medium
+      }
+    end)
+
+    (formatted_new ++ existing)
+    |> Enum.uniq_by(fn p -> p.topic end)
+    |> Enum.sort_by(fn p ->
+      case p.priority do
+        :high -> 0
+        :medium -> 1
+        :low -> 2
+        _ -> 1
+      end
+    end)
+    |> Enum.take(5)
+  end
+
+  # ---- Decision logic ----
+
+  defp decide_next_action(state) do
+    cond do
+      # User explicitly wants to END the interview
+      state.user_intent == :end_interview ->
+        if state.current_phase in [:synthesis, :closing] do
+          %{type: :transition, to_phase: :closing, reason: "User requested to end interview", consensus_override: :user_request}
+        else
+          %{type: :transition, to_phase: :synthesis, reason: "User requested to end interview", consensus_override: :user_request}
+        end
+
+      # User wants to CHANGE TOPIC (not end)
+      state.user_intent == :change_topic ->
+        handle_topic_change_request(state)
+
+      # Critical engagement - wrap up
+      state.engagement_level == :critical ->
+        %{type: :transition, to_phase: :closing, reason: "Engagement dropped to critical level", consensus_override: :critical_engagement}
+
+      # High frustration - move toward synthesis/closing
+      state.frustration_level == :high and state.current_phase not in [:synthesis, :closing] ->
+        %{type: :transition, to_phase: :synthesis, reason: "User frustration detected - moving to synthesis", consensus_override: :frustration_detected}
+
+      # In preparation - auto-advance to opening
+      state.current_phase == :preparation ->
+        %{type: :transition, to_phase: :opening, reason: "Preparation complete"}
+
+      # In opening - greet or move to core questions
+      state.current_phase == :opening ->
+        user_messages = Enum.filter(state.conversation_history || [], fn m ->
+          m.role == :user and m.content != "" and m.content != nil
+        end)
+        if length(user_messages) >= 1 do
+          maybe_transition_with_consensus(state, :core_questions, "Opening complete, user engaged")
+        else
+          question = get_opening_question()
+          %{type: :ask, question: question, source: :question_bank}
+        end
+
+      # In core questions
+      state.current_phase == :core_questions ->
+        decide_core_questions_action(state)
+
+      # In probing
+      state.current_phase == :probing ->
+        decide_probing_action(state)
+
+      # In synthesis
+      state.current_phase == :synthesis ->
+        cond do
+          state.synthesis_delivered and state.user_responded_to_synthesis ->
+            maybe_transition_with_consensus(state, :closing, "Synthesis complete, user confirmed")
+          state.synthesis_delivered and state.last_user_message != nil ->
+            maybe_transition_with_consensus(state, :closing, "Synthesis delivered, moving to closing")
+          true ->
+            %{type: :synthesize, themes: state.active_themes || []}
+        end
+
+      # In closing
+      state.current_phase == :closing ->
+        %{type: :close, themes: state.active_themes || []}
+
+      true ->
+        %{type: :wait}
+    end
+  end
+
+  defp maybe_transition_with_consensus(state, target_phase, default_reason) do
+    votes = Director.gather_transition_votes(state.session_id, target_phase)
+    {consensus_result, _votes} = Director.evaluate_consensus(votes, target_phase, state)
+
+    case consensus_result do
+      :consensus ->
+        Logger.info("[Director] CONSENSUS reached for transition to #{target_phase}")
+        %{type: :transition, to_phase: target_phase, reason: default_reason, consensus: :reached, votes: votes}
+
+      :no_consensus ->
+        Logger.warning("[Director] NO CONSENSUS for #{target_phase} - Director overriding. Votes: #{inspect(votes)}")
+        Director.emit_disagreement_signal(target_phase, votes)
+        %{type: :transition, to_phase: target_phase, reason: "#{default_reason} (Director override - no consensus)", consensus: :director_override, votes: votes}
+    end
+  end
+
+  defp handle_topic_change_request(state) do
+    if (state.topics_to_explore || []) != [] do
+      next_topic = select_topic_respecting_momentum(state)
+      Logger.info("[Director] Topic change requested - pivoting to: #{next_topic}")
+      %{type: :ask_dynamic, topic: next_topic, themes: state.active_themes || [], probes: [], engagement: state.engagement_level, source: :topic_change_request, reason: "User requested topic change"}
+    else
+      Logger.info("[Director] Topic change requested but topics exhausted - moving to synthesis")
+      %{type: :transition, to_phase: :synthesis, reason: "User requested topic change, but all topics explored"}
+    end
+  end
+
+  defp decide_core_questions_action(state) do
+    cond do
+      (state.topics_to_explore || []) != [] ->
+        next_topic = select_topic_respecting_momentum(state)
+        Logger.debug("[Director] Topic rotation: moving to #{next_topic}, remaining: #{inspect(state.topics_to_explore)}")
+        %{type: :ask_dynamic, topic: next_topic, themes: state.active_themes || [], probes: state.pending_probes || [], engagement: state.engagement_level, source: :collective_intelligence}
+
+      (state.pending_probes || []) != [] ->
+        high_probe = Enum.find(state.pending_probes, fn p -> p.priority == :high end)
+        probe = high_probe || hd(state.pending_probes)
+        Logger.debug("[Director] All topics covered, now probing: #{probe.topic}")
+        %{type: :probe, question: probe.question, topic: probe.topic, source: :probe_coach}
+
+      true ->
+        maybe_transition_with_consensus(state, :synthesis, "Core topics explored")
+    end
+  end
+
+  defp decide_probing_action(state) do
+    if (state.pending_probes || []) != [] do
+      [probe | _rest] = state.pending_probes
+      %{type: :probe, question: probe.question, topic: probe.topic}
+    else
+      maybe_transition_with_consensus(state, :synthesis, "Probing complete")
+    end
+  end
+
+  # ---- Topic selection ----
+
+  defp select_topic_respecting_momentum(state) do
+    remaining = state.topics_to_explore || []
+
+    case state.chronological_direction do
+      :forward ->
+        forward_topics = (state.config || %{})[:forward_topics] || [:vision, :passion, :differentiation]
+        selected = Enum.find(forward_topics, fn t -> t in remaining end) || hd(remaining)
+        Logger.info("[Director] MOMENTUM: User moved FORWARD -> selecting forward topic: #{selected}")
+        selected
+
+      :backward ->
+        selected = hd(remaining)
+        Logger.debug("[Director] MOMENTUM: User in backward mode -> using default: #{selected}")
+        selected
+
+      _ ->
+        select_next_topic(state)
+    end
+  end
+
+  defp select_next_topic(state) do
+    remaining = state.topics_to_explore || []
+    theme_suggested = find_theme_related_topic(state.active_themes || [], remaining, state)
+    probe_suggested = find_probe_related_topic(state.pending_probes || [], remaining, state)
+
+    cond do
+      theme_suggested != nil -> theme_suggested
+      probe_suggested != nil -> probe_suggested
+      true -> hd(remaining)
+    end
+  end
+
+  defp find_theme_related_topic(themes, remaining_topics, state) do
+    topic_keywords = (state.config || %{})[:topic_keywords] || default_topic_keywords()
+
+    Enum.find(remaining_topics, fn topic ->
+      keywords = Map.get(topic_keywords, topic, [])
+      Enum.any?(themes, fn theme ->
+        theme_text = (theme[:theme] || theme.theme || "") |> String.downcase()
+        Enum.any?(keywords, fn kw -> String.contains?(theme_text, kw) end)
+      end)
+    end)
+  end
+
+  defp find_probe_related_topic(probes, remaining_topics, state) do
+    topic_keywords = (state.config || %{})[:probe_topic_keywords] || default_probe_topic_keywords()
+
+    Enum.find(remaining_topics, fn topic ->
+      keywords = Map.get(topic_keywords, topic, [])
+      Enum.any?(probes, fn probe ->
+        probe_text = (probe[:topic] || probe.topic || "") |> String.downcase()
+        Enum.any?(keywords, fn kw -> String.contains?(probe_text, kw) end)
+      end)
+    end)
+  end
+
+  defp default_topic_keywords do
+    %{
+      origin: ["background", "start", "began", "journey", "path", "career", "how you got here", "first job", "started out"],
+      passion: ["love", "passion", "drive", "motivate", "care about", "excited", "energy", "fulfilling"],
+      differentiation: ["unique", "different", "approach", "perspective", "style", "stand out", "special"],
+      moments: ["moment", "turning point", "pivotal", "changed", "realized", "breakthrough", "milestone"],
+      vision: ["future", "goal", "vision", "next", "working toward", "dream", "aspiration", "building"]
+    }
+  end
+
+  defp default_probe_topic_keywords do
+    %{
+      origin: ["background", "start", "how", "where"],
+      passion: ["why", "love", "passion", "drive"],
+      differentiation: ["unique", "different", "approach"],
+      moments: ["when", "moment", "turning", "pivotal"],
+      vision: ["future", "goal", "next", "plan"]
+    }
+  end
+
+  defp get_opening_question do
+    case Phases.questions(:opening) do
+      [first | _] -> first.text
+      [] -> "Hi! I'm excited to learn more about you and your story. Ready to dive in?"
+    end
+  end
+
+  # ---- Action-to-state mapping ----
+
+  defp compute_action_changes(%{type: :ask_dynamic, topic: topic}, state) do
+    explored = [topic | state.topics_explored || []]
+    remaining = Enum.reject(state.topics_to_explore || [], fn t -> t == topic end)
+    Logger.debug("[Director] Topic explored: #{topic}, remaining: #{inspect(remaining)}")
+    %{topics_explored: explored, topics_to_explore: remaining}
+  end
+
+  defp compute_action_changes(%{type: :probe, topic: topic}, state) do
+    remaining_probes = Enum.reject(state.pending_probes || [], fn p -> p.topic == topic end)
+    %{pending_probes: remaining_probes}
+  end
+
+  defp compute_action_changes(%{type: :synthesize}, _state) do
+    %{synthesis_delivered: true}
+  end
+
+  defp compute_action_changes(_action, _state), do: %{}
+end
+
+# =============================================================================
+# GenerateResponse — LLM response generation
+# =============================================================================
+
+defmodule InterviewStudio.Agents.Director.Actions.GenerateResponse do
+  @moduledoc """
+  Builds prompts and calls the LLM to generate natural interview responses.
+  """
+
+  use Jido.Action,
+    name: "director_generate_response",
+    description: "Generate LLM response for interview action",
+    schema: [
+      action_type: [type: :any, default: nil],
+      context: [type: :any, default: %{}]
+    ]
+
+  require Logger
+
+  alias InterviewStudio.PromptLoader
+
+  @impl true
+  def run(params, context) do
+    state = context.state
+    action_type = params[:action_type]
+    action_context = params[:context] || %{}
+
+    response = do_generate_response(action_type, action_context, state)
+    {:ok, %{last_response_result: response}}
+  end
 
   defp do_generate_response(action_type, context, state) do
     system_prompt = build_system_prompt(state)
     user_prompt = build_user_prompt(action_type, context, state)
 
-    case call_llm(system_prompt, user_prompt, state.llm_config) do
+    case call_llm(system_prompt, user_prompt, state.llm_config || %{}) do
       {:ok, response} -> {:ok, response}
       {:error, reason} -> {:error, reason}
     end
   end
 
+  # ---- System prompt ----
+
   defp build_system_prompt(state) do
-    themes_text = case state.active_themes do
+    themes_text = case state.active_themes || [] do
       [] -> "No themes identified yet."
       themes ->
         themes
-        |> Enum.map(fn t ->
-          theme = t[:theme] || t.theme || "unknown"
-          "- #{theme}"
-        end)
+        |> Enum.map(fn t -> "- #{t[:theme] || t.theme || "unknown"}" end)
         |> Enum.join("\n")
     end
 
-    topics_explored = state.topics_explored |> Enum.map(&to_string/1) |> Enum.join(", ")
-    topics_remaining = state.topics_to_explore |> Enum.map(&to_string/1) |> Enum.join(", ")
-
+    topics_explored = (state.topics_explored || []) |> Enum.map(&to_string/1) |> Enum.join(", ")
+    topics_remaining = (state.topics_to_explore || []) |> Enum.map(&to_string/1) |> Enum.join(", ")
     questions_asked = format_questions_asked(state.questions_asked)
-
-    # Get interview memory from Scribe
     interview_memory = get_interview_memory(state.session_id)
 
-    # Load prompt template with variable substitution
     variables = %{
       current_phase: state.current_phase,
       topics_explored: if(topics_explored == "", do: "none yet", else: topics_explored),
@@ -1043,7 +1279,6 @@ defmodule InterviewStudio.Agents.Director do
     PromptLoader.load_with_vars!("interview", "director", "system", variables, default_system_prompt(variables))
   end
 
-  # Fallback system prompt if file not found
   defp default_system_prompt(vars) do
     """
     You are a warm, skilled interviewer conducting a "Story of You" interview.
@@ -1065,53 +1300,35 @@ defmodule InterviewStudio.Agents.Director do
     """
   end
 
-  # Get formatted interview context from Scribe for LLM memory
-  defp get_interview_memory(session_id) do
-    alias InterviewStudio.Agents.Scribe
-    try do
-      case Scribe.get_interview_context(session_id) do
-        %{formatted_text: text} -> text
-        _ -> ""
-      end
-    rescue
-      _ -> ""
-    catch
-      :exit, _ -> ""
-    end
-  end
+  # ---- User prompts ----
 
-  defp build_user_prompt(:ask, %{question: question}, state) do
-    history = format_recent_history(state.conversation_history, 3)
+  defp build_user_prompt(:ask, context, state) do
+    history = format_recent_history(state.conversation_history || [], 3)
+    question = context[:question] || context.question || ""
 
-    variables = %{
-      history: history,
-      question: question
-    }
+    variables = %{history: history, question: question}
 
     PromptLoader.load_with_vars!("interview", "director", "ask", variables,
       "Recent conversation:\n#{history}\n\nAsk this question naturally: \"#{question}\"\n\nRespond with just the question.")
   end
 
-  # DYNAMIC QUESTION GENERATION - The heart of multi-agent collaboration
-  # This prompt synthesizes inputs from all observer agents to generate
-  # contextually relevant questions that emerge from collective intelligence
   defp build_user_prompt(:ask_dynamic, context, state) do
-    history = format_recent_history(state.conversation_history, 5)
+    history = format_recent_history(state.conversation_history || [], 5)
     topic = context[:topic] || context.topic
     themes = context[:themes] || context.themes || []
     probes = context[:probes] || context.probes || []
     engagement = context[:engagement] || context.engagement || :medium
     frustration = state.frustration_level || :none
     chronological_direction = state.chronological_direction || :neutral
+    config = state.config || %{}
 
     themes_text = format_themes_for_prompt(themes)
     probes_text = format_probes_for_prompt(probes)
-    engagement_guidance = engagement_to_guidance(engagement, state.config)
-    frustration_guidance = frustration_to_guidance(frustration, state.config)
-    chronological_guidance = chronological_to_guidance(chronological_direction, state.config)
-    topic_description = topic_to_description(topic, state.config)
+    engagement_guidance = engagement_to_guidance(engagement, config)
+    frustration_guidance = frustration_to_guidance(frustration, config)
+    chronological_guidance = chronological_to_guidance(chronological_direction, config)
+    topic_description = topic_to_description(topic, config)
 
-    # Check if this is from a topic change request
     topic_change_note = if context[:source] == :topic_change_request do
       "\n\nIMPORTANT: User just asked to change topics. Make sure this question is about something COMPLETELY DIFFERENT from what you were just discussing."
     else
@@ -1136,7 +1353,42 @@ defmodule InterviewStudio.Agents.Director do
       default_dynamic_question_prompt(variables))
   end
 
-  # Fallback dynamic question prompt
+  defp build_user_prompt(:probe, context, state) do
+    history = format_recent_history(state.conversation_history || [], 3)
+    question = context[:question] || context.question || ""
+    topic = context[:topic] || context.topic || ""
+
+    variables = %{history: history, topic: topic, question: question}
+
+    PromptLoader.load_with_vars!("interview", "director", "probe", variables,
+      "Recent conversation:\n#{history}\n\nThe user said something interesting about: #{topic}\nAsk this follow-up: \"#{question}\"")
+  end
+
+  defp build_user_prompt(:synthesize, context, state) do
+    history = format_recent_history(state.conversation_history || [], 5)
+    themes = context[:themes] || context.themes || []
+    theme_list = themes |> Enum.map(fn t -> t[:theme] || t.theme end) |> Enum.join(", ")
+
+    variables = %{history: history, theme_list: theme_list}
+
+    PromptLoader.load_with_vars!("interview", "director", "synthesize", variables,
+      "Recent conversation:\n#{history}\n\nKey themes: #{theme_list}\n\nSummarize what you've learned in 2-3 sentences.")
+  end
+
+  defp build_user_prompt(:close, _context, state) do
+    history = format_recent_history(state.conversation_history || [], 3)
+    variables = %{history: history}
+
+    PromptLoader.load_with_vars!("interview", "director", "close", variables,
+      "Recent conversation:\n#{history}\n\nThank them warmly for sharing their story. Keep it brief and genuine.")
+  end
+
+  defp build_user_prompt(_action_type, _context, _state) do
+    "Respond naturally to continue the conversation."
+  end
+
+  # ---- Prompt helpers ----
+
   defp default_dynamic_question_prompt(vars) do
     """
     Recent conversation:
@@ -1151,46 +1403,6 @@ defmodule InterviewStudio.Agents.Director do
     """
   end
 
-  defp build_user_prompt(:probe, %{question: question, topic: topic}, state) do
-    history = format_recent_history(state.conversation_history, 3)
-
-    variables = %{
-      history: history,
-      topic: topic,
-      question: question
-    }
-
-    PromptLoader.load_with_vars!("interview", "director", "probe", variables,
-      "Recent conversation:\n#{history}\n\nThe user said something interesting about: #{topic}\nAsk this follow-up: \"#{question}\"")
-  end
-
-  defp build_user_prompt(:synthesize, %{themes: themes}, state) do
-    history = format_recent_history(state.conversation_history, 5)
-    theme_list = themes |> Enum.map(fn t -> t.theme end) |> Enum.join(", ")
-
-    variables = %{
-      history: history,
-      theme_list: theme_list
-    }
-
-    PromptLoader.load_with_vars!("interview", "director", "synthesize", variables,
-      "Recent conversation:\n#{history}\n\nKey themes: #{theme_list}\n\nSummarize what you've learned in 2-3 sentences.")
-  end
-
-  defp build_user_prompt(:close, _context, state) do
-    history = format_recent_history(state.conversation_history, 3)
-
-    variables = %{history: history}
-
-    PromptLoader.load_with_vars!("interview", "director", "close", variables,
-      "Recent conversation:\n#{history}\n\nThank them warmly for sharing their story. Keep it brief and genuine.")
-  end
-
-  defp build_user_prompt(_action_type, _context, _state) do
-    "Respond naturally to continue the conversation."
-  end
-
-  # Helper functions for build_user_prompt
   defp format_themes_for_prompt([]), do: "No themes identified yet - this is early in the conversation."
   defp format_themes_for_prompt(themes) do
     themes
@@ -1200,10 +1412,8 @@ defmodule InterviewStudio.Agents.Director do
       evidence = t[:evidence] || t.evidence || ""
       confidence = t[:confidence] || t.confidence || 0.5
 
-      # Format with enough evidence for the LLM to reference
       base = "- **#{theme}**"
       evidence_text = if evidence != "" do
-        # Include more evidence (200 chars) so LLM can reference specific words
         " — they said: \"#{String.slice(evidence, 0, 200)}\""
       else
         ""
@@ -1225,9 +1435,8 @@ defmodule InterviewStudio.Agents.Director do
       rationale = p[:rationale] || p.rationale || ""
       priority = p[:priority] || p.priority || :medium
 
-      # Include the suggested question so Director can use or adapt it
       priority_label = case priority do
-        :high -> "🔥 HIGH"
+        :high -> "HIGH"
         :medium -> "MEDIUM"
         :low -> "low"
         _ -> "medium"
@@ -1305,32 +1514,35 @@ defmodule InterviewStudio.Agents.Director do
     |> Enum.join("\n")
   end
 
+  defp get_interview_memory(session_id) do
+    alias InterviewStudio.Agents.Scribe
+    try do
+      case Scribe.get_interview_context(session_id) do
+        %{formatted_text: text} -> text
+        _ -> ""
+      end
+    rescue
+      _ -> ""
+    catch
+      :exit, _ -> ""
+    end
+  end
+
+  # ---- LLM call ----
+
   defp call_llm(system_prompt, user_prompt, config) do
     try do
-      # Build Model struct with API key from environment (Groq via OpenAI-compatible API)
-      api_key = System.get_env("AgentDemo_Groq_API_Key") || ""
+      model_name = config[:model] || "meta-llama/llama-4-scout-17b-16e-instruct"
 
-      model = %Jido.AI.Model{
-        provider: :openrouter,
-        base_url: "https://api.groq.com/openai/v1/chat/completions",
-        model: config[:model] || "meta-llama/llama-4-scout-17b-16e-instruct",
-        api_key: api_key,
+      case Jido.Exec.run(Jido.AI.Actions.LLM.Chat, %{
+        model: "groq:#{model_name}",
+        prompt: user_prompt,
+        system_prompt: system_prompt,
         temperature: config[:temperature] || 0.7,
         max_tokens: config[:max_tokens] || 1000
-      }
-
-      # Build Prompt with system and user messages
-      prompt = Jido.AI.Prompt.new(%{
-        messages: [
-          %{role: :system, content: system_prompt},
-          %{role: :user, content: user_prompt}
-        ]
-      })
-
-      # Call Langchain action
-      case Jido.AI.Actions.Langchain.run(%{model: model, prompt: prompt}, %{}) do
-        {:ok, %{content: content}} -> {:ok, content}
-        {:ok, result} when is_map(result) -> {:ok, Map.get(result, :content, inspect(result))}
+      }) do
+        {:ok, %{text: content}} -> {:ok, content}
+        {:ok, result} when is_map(result) -> {:ok, Map.get(result, :text, inspect(result))}
         {:error, reason} -> {:error, reason}
       end
     rescue
@@ -1338,17 +1550,5 @@ defmodule InterviewStudio.Agents.Director do
         Logger.error("[Director] LLM call failed: #{inspect(e)}")
         {:error, "LLM call failed"}
     end
-  end
-
-  defp via_tuple(session_id) do
-    {:via, Registry, {InterviewStudio.SessionRegistry, {:director, session_id}}}
-  end
-
-  defp default_llm_config do
-    %{
-      provider: :openrouter,
-      model: "meta-llama/llama-4-scout-17b-16e-instruct",
-      temperature: 0.7
-    }
   end
 end

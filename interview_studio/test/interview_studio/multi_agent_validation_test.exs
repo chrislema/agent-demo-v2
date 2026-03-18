@@ -40,7 +40,7 @@ defmodule InterviewStudio.MultiAgentValidationTest do
       # 4. Dynamic question generation from collective intelligence
 
       # Create a session
-      {:ok, session_id} = Session.create()
+      {:ok, session_id} = Session.start_session()
 
       # Simulate a conversation that would trigger agent collaboration
       conversation = [
@@ -87,12 +87,12 @@ defmodule InterviewStudio.MultiAgentValidationTest do
       # Our system should show signs of accumulated context influencing responses
 
       # Clean up
-      Session.stop(session_id)
+      Session.stop_session(session_id)
     end
 
     @tag :pipeline_comparison
     test "questions reference specific conversation content (not generic)" do
-      {:ok, session_id} = Session.create()
+      {:ok, session_id} = Session.start_session()
 
       # Start interview
       {:ok, _} = Session.process_message(session_id, "")
@@ -131,7 +131,7 @@ defmodule InterviewStudio.MultiAgentValidationTest do
       # Note: This assertion may fail if LLM is unavailable, but documents the intent
       # In a real test, we'd mock the LLM or use recorded responses
 
-      Session.stop(session_id)
+      Session.stop_session(session_id)
     end
   end
 

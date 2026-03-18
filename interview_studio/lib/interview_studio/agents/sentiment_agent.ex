@@ -13,68 +13,48 @@ defmodule InterviewStudio.Agents.SentimentAgent do
   - Track chronological direction preference (forward/backward/neutral)
   - Alert Director with semantic signals for decision-making
   - Track sentiment trends over the conversation
+
+  Implemented as a Jido.Agent with signal_routes and Actions.
   """
 
-  use GenServer
+  use Jido.Agent,
+    name: "sentiment_agent",
+    description: "Monitors user frustration, intent, and emotional cues",
+    schema: [
+      session_id: [type: :any, default: nil],
+      frustration_level: [type: :atom, default: :none],
+      user_intent: [type: :atom, default: :continue],
+      chronological_direction: [type: :atom, default: :neutral],
+      frustration_history: [type: :any, default: []],
+      last_analysis: [type: :any, default: nil],
+      consecutive_short_answers: [type: :integer, default: 0],
+      engagement_level: [type: :atom, default: :high],
+      current_phase: [type: :atom, default: :opening],
+      llm_config: [type: :any, default: %{}],
+      domain: [type: :any, default: nil],
+      heuristics: [type: :any, default: %{}],
+      last_question: [type: :any, default: nil]
+    ],
+    signal_routes: [
+      {"interview.utterance.user", InterviewStudio.Agents.SentimentAgent.Actions.AnalyzeUserMessage},
+      {"interview.utterance.host", InterviewStudio.Agents.SentimentAgent.Actions.TrackHostQuestion},
+      {"observer.status.engagement", InterviewStudio.Agents.SentimentAgent.Actions.HandleEngagement},
+      {"interview.phase.entered", InterviewStudio.Agents.SentimentAgent.Actions.HandlePhaseChange},
+      {"interview.phase.changed", InterviewStudio.Agents.SentimentAgent.Actions.HandlePhaseChange}
+    ]
+
   require Logger
 
   alias InterviewStudio.InterviewBus
-  alias InterviewStudio.PromptLoader
   alias InterviewStudio.DomainLoader
-
-  defstruct [
-    :session_id,
-    :frustration_level,      # :none, :mild, :moderate, :high
-    :user_intent,            # :continue, :change_topic, :end_interview
-    :chronological_direction, # :forward, :backward, :neutral
-    :frustration_history,    # Track recent frustration indicators
-    :last_analysis,
-    :consecutive_short_answers,
-    :engagement_level,       # From Engagement Monitor - affects frustration escalation
-    :current_phase,          # From phase changes - affects frustration tolerance
-    :llm_config,             # LLM configuration for semantic analysis
-    :domain,                 # PHASE 4: Domain configuration
-    :heuristics,             # PHASE 4: Agent-specific heuristics from YAML
-    :last_question           # Track last question asked for context
-  ]
-
-  # LLM timeout for graceful degradation
-  @llm_timeout_ms 2000
 
   # Client API
 
   def start_link(opts \\ []) do
     session_id = Keyword.fetch!(opts, :session_id)
-    GenServer.start_link(__MODULE__, opts, name: via_tuple(session_id))
-  end
-
-  def analyze_message(session_id, message) do
-    GenServer.cast(via_tuple(session_id), {:analyze, message})
-  end
-
-  def get_frustration_level(session_id) do
-    GenServer.call(via_tuple(session_id), :get_level)
-  end
-
-  def get_state(session_id) do
-    GenServer.call(via_tuple(session_id), :get_state)
-  end
-
-  @doc """
-  Vote on phase transition based on sentiment.
-  """
-  def vote_transition(session_id, target_phase) do
-    GenServer.call(via_tuple(session_id), {:vote_transition, target_phase})
-  end
-
-  # Server Callbacks
-
-  @impl true
-  def init(opts) do
-    session_id = Keyword.fetch!(opts, :session_id)
     llm_config = Keyword.get(opts, :llm_config, default_llm_config())
 
-    # PHASE 4: Get domain from opts (passed by AgentSupervisor)
+    # PHASE 4: Get domain from opts
     domain = Keyword.get(opts, :domain)
 
     # PHASE 4: Load heuristics from domain config
@@ -84,188 +64,162 @@ defmodule InterviewStudio.Agents.SentimentAgent do
       %{}
     end
 
-    state = %__MODULE__{
-      session_id: session_id,
-      frustration_level: :none,
-      user_intent: :continue,
-      chronological_direction: :neutral,
-      frustration_history: [],
-      last_analysis: nil,
-      consecutive_short_answers: 0,
-      engagement_level: :high,
-      current_phase: :opening,
-      llm_config: llm_config,
-      domain: domain,
-      heuristics: heuristics
-    }
+    {:ok, pid} = Jido.AgentServer.start_link(
+      agent: __MODULE__,
+      name: via_tuple(session_id),
+      id: "sentiment_agent_#{session_id}",
+      register_global: false,
+      initial_state: %{
+        session_id: session_id,
+        llm_config: llm_config,
+        domain: domain,
+        heuristics: heuristics
+      }
+    )
 
-    # PHASE 4: Subscribe based on domain config or use defaults
-    subscribe_to_signals(domain)
+    # Subscribe to InterviewBus signals
+    InterviewBus.subscribe_pid("interview.utterance.user", pid)
+    InterviewBus.subscribe_pid("interview.utterance.host", pid)
+    InterviewBus.subscribe_pid("observer.status.engagement", pid)
+    InterviewBus.subscribe_pid("interview.phase.**", pid)
 
     Logger.info("[SentimentAgent] Started for session #{session_id} (domain: #{domain && domain.name || "default"})")
-    {:ok, state}
+    {:ok, pid}
   end
 
-  # PHASE 4: Subscribe to signals based on domain config or use defaults
-  defp subscribe_to_signals(nil) do
-    InterviewBus.subscribe("interview.utterance.user")
-    InterviewBus.subscribe("observer.status.engagement")
-    InterviewBus.subscribe("interview.phase.**")
+  def analyze_message(session_id, message) do
+    signal = %Jido.Signal{
+      type: "interview.utterance.user",
+      source: "session",
+      id: Jido.Util.generate_id(),
+      data: %{content: message},
+      time: DateTime.utc_now()
+    }
+    GenServer.cast(via_tuple(session_id), {:signal, signal})
   end
 
-  defp subscribe_to_signals(domain) do
-    subscriptions = DomainLoader.get_subscriptions(domain, :sentiment_agent)
-
-    if subscriptions == [] do
-      subscribe_to_signals(nil)
-    else
-      Enum.each(subscriptions, fn pattern ->
-        InterviewBus.subscribe(pattern)
-      end)
-    end
+  def get_frustration_level(session_id) do
+    state = get_agent_state(session_id)
+    state.frustration_level
   end
 
-  @impl true
-  def handle_call(:get_level, _from, state) do
-    {:reply, state.frustration_level, state}
+  def get_state(session_id) do
+    get_agent_state(session_id)
   end
 
-  @impl true
-  def handle_call(:get_state, _from, state) do
-    {:reply, state, state}
+  @doc """
+  Vote on phase transition based on sentiment.
+  """
+  def vote_transition(session_id, target_phase) do
+    state = get_agent_state(session_id)
+    evaluate_vote(target_phase, state)
   end
 
-  @impl true
-  def handle_call({:vote_transition, target_phase}, _from, state) do
-    vote = case {target_phase, state.frustration_level} do
-      # High frustration - support moving toward closing
+  # Private helpers
+
+  defp get_agent_state(session_id) do
+    {:ok, server_state} = Jido.AgentServer.state(via_tuple(session_id))
+    server_state.agent.state
+  end
+
+  defp via_tuple(session_id) do
+    {:via, Registry, {InterviewStudio.SessionRegistry, {:sentiment_agent, session_id}}}
+  end
+
+  defp default_llm_config do
+    %{
+      provider: :openrouter,
+      model: "meta-llama/llama-4-scout-17b-16e-instruct",
+      temperature: 0.3
+    }
+  end
+
+  defp evaluate_vote(target_phase, state) do
+    case {target_phase, state.frustration_level} do
       {:closing, :high} ->
         {:ready, "User shows high frustration - recommend wrapping up"}
       {:closing, :moderate} ->
         {:ready, "User shows frustration - closing would be appropriate"}
-
-      # Support synthesis if frustrated
       {:synthesis, level} when level in [:moderate, :high] ->
         {:ready, "User frustration suggests moving toward synthesis"}
-
-      # General case
       _ ->
         {:abstain, "No sentiment concerns for this transition"}
     end
-
-    {:reply, vote, state}
   end
+end
+
+# =============================================================================
+# Action: AnalyzeUserMessage
+# =============================================================================
+
+defmodule InterviewStudio.Agents.SentimentAgent.Actions.AnalyzeUserMessage do
+  @moduledoc "Analyzes user messages for frustration, intent, and temporal direction."
+
+  use Jido.Action,
+    name: "sentiment_analyze_user_message",
+    description: "Analyze user message for sentiment and intent",
+    schema: [
+      content: [type: :any],
+      timestamp: [type: :any]
+    ]
+
+  require Logger
+
+  alias InterviewStudio.InterviewBus
+  alias InterviewStudio.PromptLoader
+
+  # LLM timeout for graceful degradation
+  @llm_timeout_ms 2000
 
   @impl true
-  def handle_cast({:analyze, message}, state) do
-    new_state = analyze_and_update(message, state)
-    {:noreply, new_state}
-  end
+  def run(params, context) do
+    state = context.state
+    message = params[:content] || ""
 
-  @impl true
-  def handle_info({:signal, %{type: "interview.utterance.user"} = signal}, state) do
-    message = signal.data[:content] || ""
-    new_state = analyze_and_update(message, state)
-    {:noreply, new_state}
-  end
-
-  # CROSS-AGENT: Receive engagement updates from Engagement Monitor
-  @impl true
-  def handle_info({:signal, %{type: "observer.status.engagement"} = signal}, state) do
-    level = signal.data[:level] || :high
-    Logger.debug("[SentimentAgent] <- [EngagementMonitor] Engagement: #{level}")
-    new_state = %{state | engagement_level: level}
-
-    # If engagement is critical and we have any frustration, escalate it
-    new_state = if level == :critical and state.frustration_level not in [:none] do
-      escalated = escalate_frustration(state.frustration_level)
-      Logger.info("[SentimentAgent] Escalating frustration from #{state.frustration_level} to #{escalated} due to critical engagement")
-      emit_frustration_signal(escalated, [:engagement_critical], state.session_id)
-      %{new_state | frustration_level: escalated}
+    if message == "" do
+      {:ok, %{}}
     else
-      new_state
-    end
-
-    {:noreply, new_state}
-  end
-
-  # CROSS-AGENT: Receive phase changes - adjust frustration tolerance
-  @impl true
-  def handle_info({:signal, %{type: "interview.phase." <> _} = signal}, state) do
-    phase = signal.data[:phase] || signal.data[:to_phase]
-    if phase do
-      Logger.debug("[SentimentAgent] <- [Director] Phase change: #{phase}")
-      {:noreply, %{state | current_phase: phase}}
-    else
-      {:noreply, state}
-    end
-  end
-
-  # Track interviewer questions for context in temporal analysis
-  @impl true
-  def handle_info({:signal, %{type: "interview.utterance.host"} = signal}, state) do
-    question = signal.data[:content] || ""
-    Logger.debug("[SentimentAgent] Tracking last question for context: #{String.slice(question, 0, 50)}...")
-    {:noreply, %{state | last_question: question}}
-  end
-
-  @impl true
-  def handle_info({:signal, _}, state), do: {:noreply, state}
-
-  # Private functions
-
-  defp analyze_and_update(message, state) do
-    # Skip empty messages
-    if message == "" or message == nil do
-      state
-    else
-      # Use LLM-based analysis with fallback to heuristics
       analysis = analyze_message_sentiment_llm(message, state)
 
-      # Update consecutive short answer count
       word_count = message |> String.split() |> length()
       consecutive_short = if word_count < 5 do
-        state.consecutive_short_answers + 1
+        (state.consecutive_short_answers || 0) + 1
       else
         0
       end
 
-      # Add to history
       history_entry = %{
         message: String.slice(message, 0, 50),
         indicators: analysis.indicators,
         user_intent: analysis.user_intent,
         timestamp: DateTime.utc_now()
       }
-      new_history = [history_entry | state.frustration_history] |> Enum.take(10)
+      new_history = [history_entry | (state.frustration_history || [])] |> Enum.take(10)
 
-      new_state = %{state |
+      # Always emit semantic signal so Director has current intent
+      emit_sentiment_signal(analysis, state.session_id)
+
+      # Also emit frustration signal for backward compatibility
+      if analysis.frustration_level != state.frustration_level or
+         analysis.frustration_level in [:moderate, :high] do
+        emit_frustration_signal(analysis.frustration_level, analysis.indicators, state.session_id)
+      end
+
+      {:ok, %{
         frustration_level: analysis.frustration_level,
         user_intent: analysis.user_intent,
         chronological_direction: analysis.chronological_direction,
         frustration_history: new_history,
         last_analysis: analysis,
         consecutive_short_answers: consecutive_short
-      }
-
-      # Always emit semantic signal so Director has current intent
-      emit_sentiment_signal(analysis, state.session_id)
-
-      # Also emit legacy frustration signal for backward compatibility
-      if analysis.frustration_level != state.frustration_level or
-         analysis.frustration_level in [:moderate, :high] do
-        emit_frustration_signal(analysis.frustration_level, analysis.indicators, state.session_id)
-      end
-
-      new_state
+      }}
     end
   end
 
   # LLM-based sentiment analysis with timeout and fallback
   defp analyze_message_sentiment_llm(message, state) do
-    # Start async LLM call with timeout - pass question context for semantic understanding
     last_question = state.last_question || "Tell me about yourself"
-    task = Task.async(fn -> call_sentiment_llm(message, last_question, state.llm_config) end)
+    task = Task.async(fn -> call_sentiment_llm(message, last_question, state.llm_config || %{}) end)
 
     case Task.yield(task, @llm_timeout_ms) do
       {:ok, {:ok, result}} ->
@@ -274,18 +228,15 @@ defmodule InterviewStudio.Agents.SentimentAgent do
 
       {:ok, {:error, reason}} ->
         Logger.warning("[SentimentAgent] LLM failed: #{inspect(reason)}, using fallback")
-        # PHASE 4: Pass heuristics for config-driven fallback
         fallback_sentiment_analysis(message, state.heuristics || %{})
 
       nil ->
         Task.shutdown(task, :brutal_kill)
         Logger.warning("[SentimentAgent] LLM timeout, using fallback")
-        # PHASE 4: Pass heuristics for config-driven fallback
         fallback_sentiment_analysis(message, state.heuristics || %{})
     end
   end
 
-  # Call LLM for semantic sentiment analysis
   defp call_sentiment_llm(message, question, config) do
     system_prompt = PromptLoader.load!("interview", "sentiment_agent", "system",
       default_sentiment_system_prompt())
@@ -295,30 +246,20 @@ defmodule InterviewStudio.Agents.SentimentAgent do
       default_sentiment_analyze_prompt(message, question))
 
     try do
-      api_key = System.get_env("AgentDemo_Groq_API_Key") || ""
+      model_name = config[:model] || "meta-llama/llama-4-scout-17b-16e-instruct"
 
-      model = %Jido.AI.Model{
-        provider: :openrouter,
-        base_url: "https://api.groq.com/openai/v1/chat/completions",
-        model: config[:model] || "meta-llama/llama-4-scout-17b-16e-instruct",
-        api_key: api_key,
+      case Jido.Exec.run(Jido.AI.Actions.LLM.Chat, %{
+        model: "groq:#{model_name}",
+        prompt: user_prompt,
+        system_prompt: system_prompt,
         temperature: 0.3,
         max_tokens: 100
-      }
-
-      prompt = Jido.AI.Prompt.new(%{
-        messages: [
-          %{role: :system, content: system_prompt},
-          %{role: :user, content: user_prompt}
-        ]
-      })
-
-      case Jido.AI.Actions.Langchain.run(%{model: model, prompt: prompt}, %{}) do
-        {:ok, %{content: content}} ->
+      }) do
+        {:ok, %{text: content}} ->
           parse_sentiment_json(content)
 
         {:ok, result} when is_map(result) ->
-          parse_sentiment_json(Map.get(result, :content, "{}"))
+          parse_sentiment_json(Map.get(result, :text, "{}"))
 
         {:error, reason} ->
           {:error, reason}
@@ -330,7 +271,6 @@ defmodule InterviewStudio.Agents.SentimentAgent do
     end
   end
 
-  # Fallback system prompt
   defp default_sentiment_system_prompt do
     """
     You are a sentiment analyzer for interview conversations.
@@ -338,7 +278,6 @@ defmodule InterviewStudio.Agents.SentimentAgent do
     """
   end
 
-  # Fallback analyze prompt
   defp default_sentiment_analyze_prompt(message, question) do
     """
     Analyze this interview exchange for sentiment, intent, and temporal direction.
@@ -352,9 +291,7 @@ defmodule InterviewStudio.Agents.SentimentAgent do
     """
   end
 
-  # Parse JSON response from LLM
   defp parse_sentiment_json(content) do
-    # Extract JSON from response (LLM might include extra text)
     json_str = case Regex.run(~r/\{[^}]+\}/, content) do
       [match] -> match
       _ -> content
@@ -401,20 +338,14 @@ defmodule InterviewStudio.Agents.SentimentAgent do
     downcased = String.downcase(message)
     word_count = message |> String.split() |> length()
 
-    # Get config-driven phrases or use defaults
     intent_config = heuristics[:intent_detection] || default_intent_detection()
     frustration_config = heuristics[:frustration_phrases] || default_frustration_phrases()
     chrono_config = heuristics[:chronological_keywords] || default_chronological_keywords()
     thresholds = heuristics[:thresholds] || %{}
     short_answer_words = thresholds[:short_answer_words] || 5
 
-    # Detect user intent from config phrases
     user_intent = detect_user_intent(downcased, intent_config)
-
-    # Detect frustration from config phrases
     frustration_level = detect_frustration(downcased, frustration_config)
-
-    # Detect chronological direction from config
     chronological_direction = detect_chronological(downcased, chrono_config)
 
     indicators = []
@@ -430,9 +361,6 @@ defmodule InterviewStudio.Agents.SentimentAgent do
       indicators: indicators
     }
   end
-
-
-  # PHASE 4: Helper functions for config-driven detection
 
   defp detect_user_intent(text, config) do
     cond do
@@ -463,7 +391,6 @@ defmodule InterviewStudio.Agents.SentimentAgent do
     Enum.any?(phrases, &String.contains?(text, &1))
   end
 
-  # Default configs for fallback
   defp default_intent_detection do
     %{
       end_interview: ["let's wrap", "i'm done", "let's end", "that's enough"],
@@ -485,12 +412,6 @@ defmodule InterviewStudio.Agents.SentimentAgent do
       backward: ["grew up", "when i was younger", "early years", "back then"]
     }
   end
-
-
-  # Helper to escalate frustration level when engagement is critical
-  defp escalate_frustration(:mild), do: :moderate
-  defp escalate_frustration(:moderate), do: :high
-  defp escalate_frustration(level), do: level
 
   defp emit_frustration_signal(level, indicators, _session_id) do
     recommendation = case level do
@@ -516,7 +437,6 @@ defmodule InterviewStudio.Agents.SentimentAgent do
     Logger.info("[SentimentAgent] Frustration level: #{level}, indicators: #{inspect(indicators)}")
   end
 
-  # Emit comprehensive semantic signal for Director consumption
   defp emit_sentiment_signal(analysis, _session_id) do
     signal = %Jido.Signal{
       type: "observer.status.sentiment",
@@ -534,16 +454,123 @@ defmodule InterviewStudio.Agents.SentimentAgent do
     InterviewBus.publish(signal)
     Logger.info("[SentimentAgent] Semantic signal - intent: #{analysis.user_intent}, direction: #{analysis.chronological_direction}, frustration: #{analysis.frustration_level}")
   end
+end
 
-  defp default_llm_config do
-    %{
-      provider: :openrouter,
-      model: "meta-llama/llama-4-scout-17b-16e-instruct",
-      temperature: 0.3
-    }
+# =============================================================================
+# Action: TrackHostQuestion
+# =============================================================================
+
+defmodule InterviewStudio.Agents.SentimentAgent.Actions.TrackHostQuestion do
+  @moduledoc "Tracks interviewer questions for context in temporal analysis."
+
+  use Jido.Action,
+    name: "sentiment_track_host_question",
+    description: "Track last interviewer question for context",
+    schema: [
+      content: [type: :any],
+      timestamp: [type: :any]
+    ]
+
+  require Logger
+
+  @impl true
+  def run(params, _context) do
+    question = params[:content] || ""
+    Logger.debug("[SentimentAgent] Tracking last question for context: #{String.slice(question, 0, 50)}...")
+    {:ok, %{last_question: question}}
+  end
+end
+
+# =============================================================================
+# Action: HandleEngagement
+# =============================================================================
+
+defmodule InterviewStudio.Agents.SentimentAgent.Actions.HandleEngagement do
+  @moduledoc "Handles engagement updates; escalates frustration when engagement is critical."
+
+  use Jido.Action,
+    name: "sentiment_handle_engagement",
+    description: "Handle engagement update and maybe escalate frustration",
+    schema: [
+      level: [type: :any]
+    ]
+
+  require Logger
+
+  alias InterviewStudio.InterviewBus
+
+  @impl true
+  def run(params, context) do
+    state = context.state
+    level = params[:level] || :high
+    Logger.debug("[SentimentAgent] <- [EngagementMonitor] Engagement: #{level}")
+
+    new_state = %{engagement_level: level}
+
+    # If engagement is critical and we have any frustration, escalate it
+    if level == :critical and state.frustration_level not in [:none] do
+      escalated = escalate_frustration(state.frustration_level)
+      Logger.info("[SentimentAgent] Escalating frustration from #{state.frustration_level} to #{escalated} due to critical engagement")
+      emit_frustration_signal(escalated, [:engagement_critical], state.session_id)
+      {:ok, Map.put(new_state, :frustration_level, escalated)}
+    else
+      {:ok, new_state}
+    end
   end
 
-  defp via_tuple(session_id) do
-    {:via, Registry, {InterviewStudio.SessionRegistry, {:sentiment_agent, session_id}}}
+  defp escalate_frustration(:mild), do: :moderate
+  defp escalate_frustration(:moderate), do: :high
+  defp escalate_frustration(level), do: level
+
+  defp emit_frustration_signal(level, indicators, _session_id) do
+    recommendation = case level do
+      :high -> "User is frustrated - apologize briefly and change topic immediately"
+      :moderate -> "User seems irritated - accept their answer and move on"
+      _ -> "Monitor frustration"
+    end
+
+    signal = %Jido.Signal{
+      type: "observer.status.frustration",
+      source: "sentiment_agent",
+      id: Jido.Util.generate_id(),
+      data: %{
+        level: level,
+        indicators: indicators,
+        recommendation: recommendation,
+        timestamp: DateTime.utc_now()
+      }
+    }
+
+    InterviewBus.publish(signal)
+  end
+end
+
+# =============================================================================
+# Action: HandlePhaseChange
+# =============================================================================
+
+defmodule InterviewStudio.Agents.SentimentAgent.Actions.HandlePhaseChange do
+  @moduledoc "Updates current phase on phase transitions."
+
+  use Jido.Action,
+    name: "sentiment_handle_phase_change",
+    description: "Track phase changes for frustration tolerance",
+    schema: [
+      phase: [type: :any],
+      phase_name: [type: :any],
+      to_phase: [type: :any]
+    ]
+
+  require Logger
+
+  @impl true
+  def run(params, _context) do
+    phase = params[:phase] || params[:phase_name] || params[:to_phase]
+    if phase do
+      Logger.debug("[SentimentAgent] <- [Director] Phase change: #{phase}")
+      {:ok, %{current_phase: phase}}
+    else
+      {:ok, %{}}
+    end
   end
 end
