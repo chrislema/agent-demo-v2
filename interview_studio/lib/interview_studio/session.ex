@@ -367,6 +367,12 @@ defmodule InterviewStudio.Session do
     end
 
     case result do
+      {:already_in_phase, ^phase} ->
+        # Idempotent: we were already in this phase, do NOT re-enter get_next_action
+        # to prevent infinite loops (e.g., change_topic → transition synthesis → already there → repeat)
+        Logger.debug("[Session] Already in #{phase}, skipping post-transition action")
+        {:ok, nil}
+
       {:ok, ^phase} ->
         # After transitioning, get the next action (question/probe/etc)
         # This ensures we ask the first question after entering a new phase

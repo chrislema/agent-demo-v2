@@ -795,7 +795,7 @@ defmodule InterviewStudio.Agents.Director.Actions.TransitionPhase do
       # Idempotent: already in this phase
       state.current_phase == to_phase ->
         Logger.debug("[Director] Already in #{to_phase}, ignoring transition request")
-        {:ok, %{last_transition_result: {:ok, to_phase}}}
+        {:ok, %{last_transition_result: {:already_in_phase, to_phase}}}
 
       # Valid transition
       Director.valid_transition?(state.current_phase, to_phase) ->
@@ -1207,6 +1207,15 @@ defmodule InterviewStudio.Agents.Director.Actions.DecideNextAction do
     %{synthesis_delivered: true}
   end
 
+  # Transitions triggered by user_intent must clear the intent to prevent re-triggering loops
+  defp compute_action_changes(%{type: :transition} = action, _state) do
+    if action[:reason] && String.contains?(to_string(action[:reason]), "User requested") do
+      %{user_intent: :continue}
+    else
+      %{}
+    end
+  end
+
   defp compute_action_changes(_action, _state), do: %{}
 end
 
@@ -1486,7 +1495,7 @@ defmodule InterviewStudio.Agents.Director.Actions.GenerateResponse do
     Map.get(descriptions, topic) || default_topic_description(topic)
   end
 
-  defp default_topic_description(:origin), do: "their ORIGIN STORY - their professional journey, how they got into this field"
+  defp default_topic_description(:origin), do: "their PROFESSIONAL JOURNEY - how they got into this field, what led them to their current career path (NOT childhood or personal history - focus on career beginnings)"
   defp default_topic_description(:passion), do: "their PASSION - what drives them, what they care deeply about"
   defp default_topic_description(:differentiation), do: "what makes them UNIQUE - their distinctive approach or perspective"
   defp default_topic_description(:moments), do: "PIVOTAL MOMENTS - turning points that shaped who they became"

@@ -137,34 +137,57 @@ defmodule InterviewStudioWeb.DebugLive do
   end
 
   defp is_agent_communication?(signal) do
-    # Agent-to-agent signals have a target or are theme/probe notifications
+    # Agent-to-agent signals: direct messages, observer insights/suggestions, and consensus
     has_target = get_in(signal, [Access.key(:data, %{}), :target]) != nil
     is_theme_notification = signal.type == "analyst.theme.discovered"
     is_engagement_alert = signal.type == "engagement.alert.broadcast"
     is_consensus = String.starts_with?(signal.type, "director.consensus")
+    # Observer signals ARE collaboration — agents sharing insights with Director
+    is_observer_insight = String.starts_with?(signal.type, "observer.insight.")
+    is_observer_suggestion = String.starts_with?(signal.type, "observer.suggestion.")
+    is_observer_status = signal.type == "observer.status.engagement"
 
-    has_target or is_theme_notification or is_engagement_alert or is_consensus
+    has_target or is_theme_notification or is_engagement_alert or is_consensus or
+      is_observer_insight or is_observer_suggestion or is_observer_status
   end
 
   defp format_communication(signal) do
-    target = get_in(signal, [Access.key(:data, %{}), :target]) || "all"
     timestamp = get_in(signal, [Access.key(:data, %{}), :timestamp]) || DateTime.utc_now()
 
     message = cond do
       signal.type == "analyst.theme.discovered" ->
         "Theme: #{signal.data[:theme] || "unknown"}"
+      String.starts_with?(signal.type, "observer.insight.") ->
+        insight_type = String.replace_prefix(signal.type, "observer.insight.", "")
+        "#{String.capitalize(insight_type)}: #{signal.data[:theme] || signal.data[:pattern_type] || "analysis complete"}"
+      String.starts_with?(signal.type, "observer.suggestion.") ->
+        "Suggested: #{signal.data[:topic] || signal.data[:suggested_question] || "probe"}"
+      signal.type == "observer.status.engagement" ->
+        "Engagement: #{signal.data[:level] || "unknown"} (#{signal.data[:trend] || "stable"})"
       signal.type == "engagement.alert.broadcast" ->
-        "Engagement: #{signal.data[:level] || "unknown"} - #{signal.data[:message] || ""}"
+        "Alert: #{signal.data[:level] || "unknown"} - #{signal.data[:message] || ""}"
       signal.type == "director.consensus.disagreement" ->
         "Disagreement on #{signal.data[:target_phase] || "unknown"}"
       true ->
         preview_data(signal.data)
     end
 
+    # For observer signals, target is always the Director (the consumer)
+    effective_target = cond do
+      get_in(signal, [Access.key(:data, %{}), :target]) != nil ->
+        signal.data[:target]
+      String.starts_with?(signal.type, "observer.") ->
+        "director"
+      signal.type == "engagement.alert.broadcast" ->
+        "all"
+      true ->
+        "all"
+    end
+
     %{
       timestamp: timestamp,
       source: signal.source,
-      target: target,
+      target: effective_target,
       type: signal.type,
       message: message,
       signal: signal

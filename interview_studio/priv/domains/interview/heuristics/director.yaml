@@ -5,7 +5,7 @@
 
 # Topic descriptions for LLM prompts
 topic_descriptions:
-  origin: "their ORIGIN STORY - their professional journey, how they got into this field, the path that led them here"
+  origin: "their PROFESSIONAL JOURNEY - how they got into this field, what led them to their current career path (NOT childhood or personal history - focus on career beginnings)"
   passion: "their PASSION - what drives them, what they care deeply about"
   differentiation: "what makes them UNIQUE - their distinctive approach or perspective"
   moments: "PIVOTAL MOMENTS - turning points that shaped who they became"
