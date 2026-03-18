@@ -238,6 +238,8 @@ defmodule InterviewStudio.Agents.StoryAnalyst.Actions.HandleUtterance do
       (rem(new_count, analysis_frequency) == 0 or
        (new_count == 1 and String.length(content) > first_msg_min_length))
 
+    Logger.info("[StoryAnalyst] Utterance received (role=#{role}, count=#{new_count}, should_analyze=#{should_analyze}, engagement=#{state.engagement_level})")
+
     if should_analyze do
       # Capture AgentServer pid (self() IS the AgentServer for async signals)
       agent_server_pid = self()
@@ -259,6 +261,7 @@ defmodule InterviewStudio.Agents.StoryAnalyst.Actions.HandleUtterance do
     Task.start(fn ->
       case analyze_themes(state) do
         {:ok, new_themes, new_patterns} ->
+          Logger.info("[StoryAnalyst] Analysis complete: #{length(new_themes)} themes, #{length(new_patterns)} patterns found")
           emit_insights(new_themes, new_patterns, state)
 
           # Send state update back to AgentServer via signal
@@ -384,8 +387,8 @@ defmodule InterviewStudio.Agents.StoryAnalyst.Actions.HandleUtterance do
 
         {:ok, themes, patterns}
 
-      {:error, _} ->
-        Logger.warning("[StoryAnalyst] Failed to parse LLM response")
+      {:error, reason} ->
+        Logger.warning("[StoryAnalyst] Failed to parse LLM response: #{inspect(reason)}, raw: #{String.slice(response, 0, 200)}")
         {:ok, [], []}
     end
   end

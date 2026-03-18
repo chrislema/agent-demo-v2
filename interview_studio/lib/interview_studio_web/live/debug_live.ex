@@ -23,6 +23,11 @@ defmodule InterviewStudioWeb.DebugLive do
     # Get signal history
     history = InterviewBus.history(limit: 100)
 
+    # Initialize active_agents from history so agent activity reflects past signals
+    active_agents = Enum.reduce(Enum.reverse(history), %{}, fn signal, acc ->
+      update_active_agents(signal, acc)
+    end)
+
     {:ok, assign(socket,
       signals: history,
       filter: "",
@@ -31,9 +36,9 @@ defmodule InterviewStudioWeb.DebugLive do
       current_phase: get_current_phase(history),
       # Phase 5: New assigns for collaboration visibility
       agent_communications: extract_agent_communications(history),
-      active_agents: %{},  # Agents currently analyzing
+      active_agents: active_agents,
       last_synthesis: nil, # Last Director synthesis
-      question_attributions: [], # Which agents influenced each question
+      question_attributions: extract_attributions(history),
       consensus_events: extract_consensus_events(history),
       view_mode: "signals"  # signals | collaboration | synthesis
     )}
@@ -114,6 +119,13 @@ defmodule InterviewStudioWeb.DebugLive do
     end)
 
     if phase_signal, do: phase_signal.data.phase_name, else: :preparation
+  end
+
+  # Extract question attributions from history
+  defp extract_attributions(history) do
+    history
+    |> Enum.reverse()
+    |> Enum.reduce([], fn signal, acc -> track_attributions(signal, acc) end)
   end
 
   # Phase 5: Extract agent-to-agent communications from history
